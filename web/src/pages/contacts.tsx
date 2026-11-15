@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, ArrowRight, Check, CloudUpload, Download, FileText, ListPlus, Plus, Trash2, TriangleAlert, Users } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, CloudUpload, Download, FileText, ListPlus, Pencil, Plus, Trash2, TriangleAlert, Users } from 'lucide-react';
 import { Fragment, useEffect, useState, type ChangeEvent } from 'react';
 import { useSearchParams } from 'react-router';
 import { api, download } from '../api';
-import { canEdit, useAuth } from '../auth';
+import { canEdit, isAdmin, useAuth } from '../auth';
 import { useLists } from '../hooks';
 import { Button, Card, CardHeader, Drawer, Empty, ErrorBox, Field, Modal, PageHeader, Pill, SendStatus, Spinner, Stat, cx, dateTime, errText, num, timeAgo, useToast } from '../ui';
 
@@ -18,6 +18,8 @@ export function ContactsPage() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulk, setBulk] = useState<BulkAction | null>(null);
   const { workspace } = useAuth();
   const lists = useLists();
   const qs = new URLSearchParams({ limit: String(PAGE), offset: String(page * PAGE) });
@@ -26,6 +28,13 @@ export function ContactsPage() {
   if (consent === 'suppressed') qs.set('suppressed', 'true');
   else if (consent) qs.set('consent_status', consent);
   const q = useQuery({ queryKey: ['contacts', qs.toString()], queryFn: () => api(`/v1/contacts?${qs}`) });
+  // A selection only makes sense for the page it was made on.
+  const queryKey = qs.toString();
+  useEffect(() => setSelected(new Set()), [queryKey]);
+  const rows: any[] = q.data?.data ?? [];
+  const allOnPage = rows.length > 0 && rows.every((c) => selected.has(c.id));
+  const toggle = (id: string) => setSelected((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const editable = canEdit(workspace?.role);
   const counts = useQuery({
     queryKey: ['contact-counts'],
     queryFn: async () => {
@@ -76,14 +85,26 @@ export function ContactsPage() {
             </select>
             <span className="ml-auto font-mono text-[11px] text-muted">{num(total)} matching</span>
           </div>
+          {selected.size > 0 && (
+            <div className="mx-5 mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-[12px]">
+              <b className="text-brand">{num(selected.size)} selected</b>
+              <span className="mx-1 text-muted">|</span>
+              <Button size="sm" onClick={() => setBulk('opt_in')}><Check className="size-3.5" /> Mark opted in</Button>
+              <Button size="sm" onClick={() => setBulk('add_to_list')}><ListPlus className="size-3.5" /> Add to list</Button>
+              <Button size="sm" onClick={() => setBulk('remove_from_list')}>Remove from list</Button>
+              <Button size="sm" variant="danger" onClick={() => setBulk('delete')}><Trash2 className="size-3.5" /> Delete</Button>
+              <button className="ml-auto text-muted hover:text-ink" onClick={() => setSelected(new Set())}>Clear</button>
+            </div>
+          )}
           {q.isLoading ? <Spinner /> : q.data?.data.length ? (
             <>
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[720px]">
-                  <thead><tr><th className="th">Email</th><th className="th">Name</th><th className="th">Consent</th><th className="th">Source</th><th className="th">Status</th><th className="th text-right">Added</th></tr></thead>
+                  <thead><tr>{editable && <th className="th w-9"><input type="checkbox" aria-label="Select all on this page" className="size-4 accent-brand" checked={allOnPage} onChange={() => setSelected(allOnPage ? new Set() : new Set(rows.map((c) => c.id)))} /></th>}<th className="th">Email</th><th className="th">Name</th><th className="th">Consent</th><th className="th">Source</th><th className="th">Status</th><th className="th text-right">Added</th></tr></thead>
                   <tbody>
                     {q.data.data.map((c: any) => (
-                      <tr key={c.id} className="row-hover cursor-pointer" onClick={() => setOpenId(c.id)}>
+                      <tr key={c.id} className={cx('row-hover cursor-pointer', selected.has(c.id) && 'bg-indigo-50/50')} onClick={() => setOpenId(c.id)}>
+                        {editable && <td className="td w-9" onClick={(e) => e.stopPropagation()}><input type="checkbox" aria-label={`Select ${c.email}`} className="size-4 accent-brand" checked={selected.has(c.id)} onChange={() => toggle(c.id)} /></td>}
                         <td className="td font-mono text-[12px]">{c.email}</td>
                         <td className="td">{[c.first_name, c.last_name].filter(Boolean).join(' ') || <span className="text-muted">—</span>}</td>
                         <td className="td"><ConsentPill status={c.consent_status} /></td>
@@ -113,6 +134,7 @@ export function ContactsPage() {
       </div>
 
       <ContactDrawer id={openId} onClose={() => setOpenId(null)} />
+      {bulk && <BulkModal action={bulk} ids={[...selected]} onClose={() => setBulk(null)} onDone={() => { setBulk(null); setSelected(new Set()); }} />}
       {adding && <AddContactModal onClose={() => setAdding(false)} />}
       {importing && <ImportWizard onClose={() => setImporting(false)} />}
     </>
@@ -123,6 +145,58 @@ export function ConsentPill({ status }: { status: string }) {
   if (status === 'opted_in') return <Pill tone="success" dot>Opted in</Pill>;
   if (status === 'opted_out') return <Pill tone="danger" dot>Opted out</Pill>;
   return <Pill tone="neutral" dot>Unknown</Pill>;
+}
+
+type BulkAction = 'opt_in' | 'add_to_list' | 'remove_from_list' | 'delete';
+
+const BULK_TITLE: Record<BulkAction, string> = {
+  opt_in: 'Mark as opted in',
+  add_to_list: 'Add to list',
+  remove_from_list: 'Remove from list',
+  delete: 'Delete contacts',
+};
+
+/** Apply one action to every selected contact. Unsubscribed people are always skipped, never re-subscribed. */
+function BulkModal({ action, ids, onClose, onDone }: { action: BulkAction; ids: string[]; onClose: () => void; onDone: () => void }) {
+  const lists = useLists();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [source, setSource] = useState('');
+  const [listId, setListId] = useState('');
+  const needsList = action === 'add_to_list' || action === 'remove_from_list';
+  const run = useMutation({
+    mutationFn: () => api('/v1/contacts/bulk', { body: { contact_ids: ids, action, list_id: needsList ? listId : undefined, consent_source: action === 'opt_in' ? source.trim() : undefined } }),
+    onSuccess: (r: any) => {
+      toast(`${num(r.processed)} updated${r.skipped ? `, ${num(r.skipped)} skipped` : ''}`);
+      for (const key of ['contacts', 'contact-counts', 'lists', 'contact', 'campaign-review']) qc.invalidateQueries({ queryKey: [key] });
+      onDone();
+    },
+  });
+  const ready = action === 'opt_in' ? !!source.trim() : needsList ? !!listId : true;
+  return (
+    <Modal open onClose={onClose} title={`${BULK_TITLE[action]} (${num(ids.length)} contacts)`}
+      footer={<><Button onClick={onClose}>Cancel</Button><Button variant={action === 'delete' ? 'danger' : 'primary'} disabled={!ready} loading={run.isPending} onClick={() => run.mutate()}>{BULK_TITLE[action]}</Button></>}>
+      <div className="space-y-3">
+        {action === 'opt_in' && (
+          <>
+            <p className="text-[13px] text-ink-2">Only do this if every selected person agreed to receive marketing email. People who already unsubscribed are skipped.</p>
+            <Field label="Where did consent come from?" hint="Required. Saved on each contact as the consent record, e.g. 'Event sign-up sheet, Goa, March'."><input className="input" autoFocus value={source} onChange={(e) => setSource(e.target.value)} /></Field>
+          </>
+        )}
+        {needsList && (
+          <Field label="List">
+            <select className="input" value={listId} onChange={(e) => setListId(e.target.value)}>
+              <option value="">Choose a list…</option>
+              {lists.data?.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+            </select>
+          </Field>
+        )}
+        {action === 'add_to_list' && <p className="text-[12px] text-muted">Anyone added to a list that triggers a live automation enters it right away.</p>}
+        {action === 'delete' && <p className="text-[13px] text-ink-2">Active sequences stop and queued messages are cancelled. Their opt-out and bounce records are kept.</p>}
+        <ErrorBox error={run.error} />
+      </div>
+    </Modal>
+  );
 }
 
 function ListsPanel({ activeId, onSelect }: { activeId: string; onSelect: (id: string) => void }) {
@@ -237,7 +311,56 @@ function OptInBox({ contact }: { contact: any }) {
   );
 }
 
+/** Edit name and custom fields. Blank values leave a field unchanged (the API never clears data by accident). */
+function EditContact({ contact, onDone }: { contact: any; onDone: () => void }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [first, setFirst] = useState(contact.first_name ?? '');
+  const [last, setLast] = useState(contact.last_name ?? '');
+  const [fields, setFields] = useState<Record<string, string>>(Object.fromEntries(Object.entries(contact.custom_fields ?? {}).map(([k, v]) => [k, String(v ?? '')])));
+  const [newKey, setNewKey] = useState('');
+  const [newVal, setNewVal] = useState('');
+  const save = useMutation({
+    mutationFn: () => {
+      const custom: Record<string, string> = { ...fields };
+      const key = newKey.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+      if (key && newVal.trim()) custom[key] = newVal.trim();
+      return api(`/v1/contacts/${contact.id}`, { method: 'PATCH', body: { first_name: first.trim() || undefined, last_name: last.trim() || undefined, custom_fields: custom } });
+    },
+    onSuccess: () => {
+      toast('Contact updated');
+      for (const key of ['contact', 'contacts']) qc.invalidateQueries({ queryKey: [key] });
+      onDone();
+    },
+  });
+  return (
+    <form className="space-y-3 rounded-lg border border-line bg-canvas p-3" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="First name"><input className="input" value={first} onChange={(e) => setFirst(e.target.value)} /></Field>
+        <Field label="Last name"><input className="input" value={last} onChange={(e) => setLast(e.target.value)} /></Field>
+      </div>
+      {Object.keys(fields).length > 0 && (
+        <div className="space-y-2">
+          <div className="caps">Custom fields</div>
+          {Object.entries(fields).map(([k, v]) => (
+            <div key={k} className="grid grid-cols-[110px_1fr] items-center gap-2"><span className="truncate font-mono text-[11px] text-muted">{k}</span><input className="input" value={v} onChange={(e) => setFields({ ...fields, [k]: e.target.value })} /></div>
+          ))}
+        </div>
+      )}
+      <div className="grid grid-cols-[110px_1fr] gap-2">
+        <input className="input" placeholder="new field" value={newKey} onChange={(e) => setNewKey(e.target.value)} />
+        <input className="input" placeholder="value" value={newVal} onChange={(e) => setNewVal(e.target.value)} />
+      </div>
+      <p className="text-[11px] text-muted">Leaving a field blank keeps its current value. Email can't be changed; add the new address as a new contact.</p>
+      <ErrorBox error={save.error} />
+      <div className="flex justify-end gap-2"><Button type="button" onClick={onDone}>Cancel</Button><Button type="submit" variant="primary" loading={save.isPending}>Save changes</Button></div>
+    </form>
+  );
+}
+
 function ContactDrawer({ id, onClose }: { id: string | null; onClose: () => void }) {
+  const [editing, setEditing] = useState(false);
+  useEffect(() => setEditing(false), [id]);
   const q = useQuery({ queryKey: ['contact', id], enabled: !!id, queryFn: () => api(`/v1/contacts/${id}`) });
   const qc = useQueryClient();
   const toast = useToast();
@@ -247,12 +370,18 @@ function ContactDrawer({ id, onClose }: { id: string | null; onClose: () => void
     onSuccess: () => { toast('Contact deleted; sequences stopped'); qc.invalidateQueries({ queryKey: ['contacts'] }); qc.invalidateQueries({ queryKey: ['contact-counts'] }); onClose(); },
     onError: (e) => toast(errText(e), 'error'),
   });
+  const erase = useMutation({
+    mutationFn: () => api(`/v1/contacts/${id}/erase`, { method: 'DELETE' }),
+    onSuccess: () => { toast('Contact erased. Their opt-out record, if any, was kept.'); for (const key of ['contacts', 'contact-counts', 'lists']) qc.invalidateQueries({ queryKey: [key] }); onClose(); },
+    onError: (e) => toast(errText(e), 'error'),
+  });
   const c = q.data;
   return (
     <Drawer open={!!id} onClose={onClose} title={c?.email ?? 'Contact'}>
       {!c ? <Spinner /> : (
         <div className="space-y-5 text-[13px]">
           <div className="flex flex-wrap gap-2"><ConsentPill status={c.consent_status} />{c.suppressions.map((s: string) => <Pill key={s} tone="alert">{s}</Pill>)}</div>
+          {editing ? <EditContact contact={c} onDone={() => setEditing(false)} /> : (
           <dl className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-2 text-[12px]">
             <dt className="text-muted">Name</dt><dd>{[c.first_name, c.last_name].filter(Boolean).join(' ') || '—'}</dd>
             <dt className="text-muted">Consent source</dt><dd>{c.consent_source ?? '—'}</dd>
@@ -260,6 +389,8 @@ function ContactDrawer({ id, onClose }: { id: string | null; onClose: () => void
             <dt className="text-muted">Added via</dt><dd className="font-mono">{c.import_source ?? '—'}</dd>
             {Object.entries(c.custom_fields ?? {}).map(([k, v]) => <Fragment key={k}><dt className="font-mono text-muted">{k}</dt><dd>{String(v)}</dd></Fragment>)}
           </dl>
+          )}
+          {canEdit(workspace?.role) && !editing && <Button size="sm" onClick={() => setEditing(true)}><Pencil className="size-3.5" /> Edit details</Button>}
           {canEdit(workspace?.role) && c.consent_status !== 'opted_in' && <OptInBox contact={c} />}
           <section>
             <div className="caps mb-2">Lists</div>
@@ -278,6 +409,16 @@ function ContactDrawer({ id, onClose }: { id: string | null; onClose: () => void
             )) : <span className="text-muted">None</span>}
           </section>
           {canEdit(workspace?.role) && <Button variant="danger" loading={del.isPending} onClick={() => confirm('Delete this contact? Active sequences stop and queued messages are cancelled.') && del.mutate()}><Trash2 className="size-3.5" /> Delete contact</Button>}
+          {isAdmin(workspace?.role) && (
+            <section className="space-y-2 rounded-lg border border-line p-3">
+              <div className="caps">Privacy (data-subject requests)</div>
+              <p className="text-[12px] text-muted">Export everything held about this person, or erase it permanently. An opt-out record is kept so they are never emailed again.</p>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" onClick={() => download(`/v1/contacts/${id}/export`, `contact-${String(id).slice(0, 8)}.json`).catch((e) => toast(errText(e), 'error'))}><Download className="size-3.5" /> Export data</Button>
+                <Button size="sm" variant="danger" loading={erase.isPending} onClick={() => confirm(`Permanently erase ${c.email} and all their messages and history? This cannot be undone.`) && erase.mutate()}><Trash2 className="size-3.5" /> Erase permanently</Button>
+              </div>
+            </section>
+          )}
         </div>
       )}
     </Drawer>

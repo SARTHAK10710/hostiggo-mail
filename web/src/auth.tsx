@@ -12,7 +12,7 @@ interface AuthState {
   me: Me | null;
   loading: boolean;
   workspace: Me['workspaces'][number] | null;
-  signIn(token: string, workspaceId: string | null): Promise<void>;
+  signIn(workspaceId: string | null): Promise<void>;
   signOut(): Promise<void>;
   switchWorkspace(id: string): void;
 }
@@ -22,10 +22,11 @@ export const useAuth = () => useContext(Ctx);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
-  const [hasToken, setHasToken] = useState(!!session.token);
+  // The session is an httpOnly cookie we cannot see, so we simply ask the server who we are.
+  const [signedOut, setSignedOut] = useState(false);
   const meQ = useQuery({
     queryKey: ['me'],
-    enabled: hasToken,
+    enabled: !signedOut,
     retry: false,
     queryFn: async () => {
       const me = await api<Me>('/v1/me');
@@ -38,21 +39,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setUnauthorizedHandler(() => {
       session.clear();
-      setHasToken(false);
+      setSignedOut(true);
       qc.clear();
     });
   }, [qc]);
 
-  const me = hasToken ? (meQ.data ?? null) : null;
+  const me = signedOut ? null : (meQ.data ?? null);
   const workspace = me?.workspaces.find((w) => w.id === session.workspaceId) ?? me?.workspaces[0] ?? null;
 
   const value: AuthState = {
     me,
-    loading: hasToken && meQ.isLoading,
+    loading: !signedOut && meQ.isLoading,
     workspace,
-    async signIn(token, workspaceId) {
-      session.set(token, workspaceId);
-      setHasToken(true);
+    async signIn(workspaceId) {
+      if (workspaceId) session.setWorkspace(workspaceId);
+      setSignedOut(false);
       await qc.invalidateQueries({ queryKey: ['me'] });
     },
     async signOut() {
@@ -62,7 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         /* already gone */
       }
       session.clear();
-      setHasToken(false);
+      setSignedOut(true);
       qc.clear();
     },
     switchWorkspace(id) {
