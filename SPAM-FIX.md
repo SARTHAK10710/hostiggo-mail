@@ -58,7 +58,9 @@ New senders are judged mostly on content and identity.
 
 - Start with **people who know you** and are likely to open and reply.
 - Send **in small batches**: 10–20/day for the first week, then roughly double each week if spam
-  placement stays low. Lower the mailbox **Daily limit** in Deliverability to enforce it.
+  placement stays low. **The app now does this for you**: new mailboxes warm up automatically
+  (20/day, doubling every 7 days up to the mailbox's Daily limit; `WARMUP_DEFAULT=true`). Turn it on or
+  off per mailbox under *Deliverability → Daily limit*. Sends over today's cap wait in the queue.
 - Don't send the same campaign to everyone at once from a brand-new mailbox.
 - Keep **bounces under 2%** and **spam complaints under 0.1%** (Deliverability page shows both).
   The app automatically suppresses bounced and complained addresses.
@@ -75,8 +77,9 @@ New senders are judged mostly on content and identity.
     back on (`true`) once the app runs on a public HTTPS address (see IMPROVE.md 1.2), then restart.
   - The hidden `List-Unsubscribe` header is always sent, so Gmail can show its own "Unsubscribe"
     link next to your name.
-  - While the app runs on your own computer, unsubscribe works by reply: check the inbox for
-    "unsubscribe" replies and add them in **Deliverability → Add suppression**.
+  - While the app runs on your own computer, unsubscribe works by reply. With reply tracking on, a
+    reply that is just "unsubscribe" (or "stop", "remove me"…) is **processed automatically**: the sender is
+    suppressed and opted out. Without reply tracking, add them in **Deliverability → Add suppression**.
 
 ---
 
