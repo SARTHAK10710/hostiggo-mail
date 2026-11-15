@@ -2,12 +2,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   BookOpen, ChevronDown, Code2, Contact, FileCode2, LayoutDashboard, LogOut, Megaphone, Menu, Receipt, Search, Send, Settings, ShieldCheck, Workflow, X,
 } from 'lucide-react';
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { Suspense, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, NavLink, Outlet, useNavigate } from 'react-router';
 import { api } from './api';
 import { useAuth } from './auth';
 import { useActiveMailboxes, useMailboxes, useSystem } from './hooks';
-import { Button, Field, Modal, cx, errText, num, useToast } from './ui';
+import { Button, Field, Modal, Spinner, cx, errText, num, useToast } from './ui';
 
 const NAV: { to: string; label: string; icon: ReactNode; dot?: string }[] = [
   { to: '/', label: 'Overview', icon: <LayoutDashboard className="size-4" /> },
@@ -78,7 +78,7 @@ function Quota() {
   const mb = useActiveMailboxes();
   const boxes = mb.data ?? [];
   const used = boxes.reduce((s, m) => s + m.sent_last_24h, 0);
-  const limit = boxes.reduce((s, m) => s + m.daily_send_limit, 0);
+  const limit = boxes.reduce((s, m) => s + m.effective_daily_limit, 0);
   if (!boxes.length) return null;
   return (
     <div className="hidden min-w-36 lg:block" title="Messages accepted by Gmail in the last 24 hours across connected mailboxes">
@@ -223,7 +223,9 @@ export function AppLayout() {
           </div>
         </header>
         <main className="mx-auto w-full max-w-[1440px] flex-1 space-y-5 p-4 md:p-6">
-          <Outlet />
+          <Suspense fallback={<Spinner />}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
       <SendTestModal open={testOpen} onClose={() => setTestOpen(false)} />

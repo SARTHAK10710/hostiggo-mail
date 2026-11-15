@@ -47,6 +47,32 @@ to reconnect weekly until the app is verified/published.
 - [SPAM-FIX.md](SPAM-FIX.md): why test emails land in Spam and how to fix it, from quick steps to Google Workspace with SPF/DKIM/DMARC.
 - [IMPROVE.md](IMPROVE.md): prioritised list of improvements (production database, public HTTPS, ESP adapter, bulk actions, CI…).
 
+## Deploying (public HTTPS, real Postgres)
+
+The app refuses to start in `NODE_ENV=production` unless `DATABASE_URL` is real Postgres, `API_BASE_URL` /
+`APP_BASE_URL` are `https://` URLs and the secrets are set. That is what makes one-click unsubscribe,
+Gmail push notifications and the `Secure` session cookie work.
+
+```bash
+docker build -t hostiggo-mail .                      # API + dashboard
+docker run -p 4000:4000 --env-file prod.env hostiggo-mail                   # web process
+docker run --env-file prod.env hostiggo-mail node dist/worker.js            # worker process (separate!)
+```
+
+Works the same on Render, Railway, Fly.io or a VPS behind Caddy/Nginx: two processes from one image, one
+Postgres (Supabase is fine), then add `${API_BASE_URL}/oauth/google/callback` as a redirect URI in Google Cloud.
+Migrations run automatically at start. Secrets can be mounted as files (`APP_SECRET_FILE=/run/secrets/app_secret`).
+
+**Backups:** `DATABASE_URL=… ./scripts/backup.sh` writes a compressed dump and prunes old ones;
+`SCRATCH_DATABASE_URL=… ./scripts/restore-check.sh <file>` proves a dump restores. Run the first on a schedule and
+the second after the first backup and after any schema change.
+
+**Alerts:** set `ALERT_WEBHOOK_URL` (Slack-compatible) to be told when a mailbox loses access or is paused for poor health.
+
+**Security defaults:** CSP and other security headers, a 429 rate limit on sign-in/sign-up, and the dashboard
+session lives in an `httpOnly` `SameSite=Lax` cookie (page scripts cannot read it; cross-origin writes are rejected).
+API clients keep using `Authorization: Bearer`.
+
 ## Dashboard (web/)
 
 React + Vite + Tailwind, built from the Stitch designs (Overview, Automations builder,
@@ -76,17 +102,17 @@ Safety rules from guide §4/§8 that are enforced in code:
 
 ## API map (for the frontend)
 
-Auth: `Authorization: Bearer <session token>` + `X-Workspace-Id: <id>` (dashboard) or
+Auth: the dashboard uses the `hm_session` cookie (set by login/signup) or `Authorization: Bearer <session token>`, plus `X-Workspace-Id: <id>`; API clients use
 `Authorization: Bearer hm_live_…` (API keys, scoped). Errors are `{ error: { code, message, details } }`.
 
 | Area | Routes |
 |---|---|
 | Auth & workspace | `POST /v1/auth/signup` · `POST /v1/auth/login` · `POST /v1/auth/logout` · `GET /v1/me` · `POST /v1/workspaces` · `GET/POST/PATCH/DELETE /v1/members[/:userId]` · `GET/POST/DELETE /v1/api-keys[/:id]` · `GET /v1/audit-logs` |
-| Mailboxes / Deliverability | `GET /v1/mailboxes[/:id]` · `POST /v1/mailboxes/google/authorize` → `{url}` · `GET /oauth/google/callback` (redirects to `APP_BASE_URL/settings/mailboxes?connected=<id>` or `?error=<code>`) · `PATCH /v1/mailboxes/:id` · `POST /v1/mailboxes/:id/test` · `POST /v1/mailboxes/:id/disconnect` · `GET /v1/deliverability` |
-| Contacts | `GET/POST /v1/contacts` · `GET/PATCH/DELETE /v1/contacts/:id` · `GET/POST/PATCH/DELETE /v1/lists[/:id]` · `POST /v1/lists/:id/contacts` · `DELETE /v1/lists/:id/contacts/:contactId` · `GET/POST/DELETE /v1/suppressions[/:id]` |
+| Mailboxes / Deliverability | `GET /v1/mailboxes[/:id]` · `POST /v1/mailboxes/google/authorize` → `{url}` · `GET /oauth/google/callback` (redirects to `APP_BASE_URL/settings/mailboxes?connected=<id>` or `?error=<code>`) · `PATCH /v1/mailboxes/:id` (`daily_send_limit`, `warmup`) · `POST /v1/mailboxes/:id/test` · `POST /v1/mailboxes/:id/disconnect` · `GET /v1/deliverability` |
+| Contacts | `GET/POST /v1/contacts` · `POST /v1/contacts/bulk` (`opt_in` / `add_to_list` / `remove_from_list` / `delete`) · `GET/PATCH/DELETE /v1/contacts/:id` · `GET /v1/contacts/:id/export` · `DELETE /v1/contacts/:id/erase` (admin; GDPR) · `GET/POST/PATCH/DELETE /v1/lists[/:id]` · `POST /v1/lists/:id/contacts` · `DELETE /v1/lists/:id/contacts/:contactId` · `GET/POST/DELETE /v1/suppressions[/:id]` |
 | CSV import | `POST /v1/contacts/imports` (`{filename, csv}`) · `PUT /v1/contacts/imports/:id/mapping` · `GET /v1/contacts/imports/:id[/rows]` · `GET /v1/contacts/imports/:id/errors.csv` · `POST /v1/contacts/imports/:id/commit` |
 | Templates | `GET/POST /v1/templates` · `GET/PUT /v1/templates/:id` (PUT = new version) · `POST /v1/templates/:id/preview` · `POST /v1/templates/:id/test` · `POST /v1/templates/:id/archive` |
-| Automations | `GET/POST /v1/automations` · `GET/PUT /v1/automations/:id` · `POST /v1/automations/:id/{publish,pause,resume,archive,test}` · `GET /v1/automations/:id/enrollments` · `GET /v1/automations/:id/analytics` |
+| Automations | `GET/POST /v1/automations` · `GET/PUT /v1/automations/:id` · `POST /v1/automations/:id/{publish,pause,resume,archive,test}` (`publish` accepts `{enroll_existing: true}`) · `GET /v1/automations/:id/enrollments` · `GET /v1/automations/:id/analytics` |
 | Campaigns | `GET/POST /v1/campaigns` · `GET/PUT /v1/campaigns/:id` · `GET /v1/campaigns/:id/review` · `POST /v1/campaigns/:id/send` (`confirm_recipients` must equal reviewed eligible count) · `POST /v1/campaigns/:id/cancel` · `GET /v1/campaigns/:id/analytics` |
 | Transactional / send log | `POST /v1/messages/send` (needs `Idempotency-Key`) · `GET /v1/sends` · `GET /v1/sends/:id` (with event timeline) · `POST /v1/sends/:id/retry` · `POST /v1/sends/:id/cancel` · `GET /v1/analytics/overview` |
 | Product events | `POST /v1/events` (`{name, email|contact_id, idempotency_key, properties}`) |
@@ -123,8 +149,7 @@ Triggers: `list_joined` · `contact_created` · `event` (`event_name`). Template
 Branching/reply conditions, drag-and-drop canvas, A/B tests, open/click tracking, an ESP
 adapter for bulk sends (the `EmailProvider` interface in `src/providers/index.ts` is where
 it plugs in), segments with saved rules, business-hour send windows, and public self-serve
-Gmail access before OAuth verification. Phase 6 (launch readiness: monitoring, backups,
-abuse review, privacy/support pages) is operational work still to do.
+Gmail access before OAuth verification. Phase 6 (launch readiness: abuse review, privacy/support pages, a hosted deploy) is operational work still to do.
 
 ## Layout
 
@@ -132,7 +157,7 @@ abuse review, privacy/support pages) is operational work still to do.
 src/
   app.ts, server.ts, worker.ts, config.ts, context.ts
   auth/                  sessions, API keys, role/scope checks, audit
-  db/                    pg + PGlite adapter, migrations/001_init.sql
+  db/                    pg + PGlite adapter, migrations/*.sql
   jobs/                  queue (SKIP LOCKED) + worker with periodic tasks
   lib/                   crypto, MIME builder, template renderer, email utils
   providers/             Google client (real + fake), provider-neutral send interface

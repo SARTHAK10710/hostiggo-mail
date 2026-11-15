@@ -23,6 +23,10 @@ export interface Mailbox {
   health: 'healthy' | 'unhealthy';
   last_error: string | null;
   daily_send_limit: number;
+  /** Today's allowed volume: lower than daily_send_limit while the mailbox is warming up. */
+  effective_daily_limit: number;
+  warming_up: boolean;
+  warmup_started_at: string | null;
   sent_last_24h: number;
   reply_tracking: boolean;
   watch_expires_at: string | null;

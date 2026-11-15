@@ -17,12 +17,12 @@ export function LoginPage() {
     mutationFn: async () => {
       if (mode === 'signup') {
         const r = await api('/v1/auth/signup', { body: { email, password, name: name || undefined, workspace_name: workspace } });
-        return { token: r.session.token, ws: r.workspace.id };
+        return r.workspace.id as string;
       }
-      const r = await api('/v1/auth/login', { body: { email, password } });
-      return { token: r.session.token, ws: null };
+      await api('/v1/auth/login', { body: { email, password } });
+      return null;
     },
-    onSuccess: ({ token, ws }) => signIn(token, ws),
+    onSuccess: (ws) => signIn(ws),
   });
 
   const submit = (e: FormEvent) => {

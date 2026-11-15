@@ -1,6 +1,10 @@
-/** Tiny API client for the Hostiggo Mail backend (same origin; Vite proxies in dev). */
-const TOKEN_KEY = 'hm.session';
+/**
+ * Tiny API client for the Hostiggo Mail backend (same origin; Vite proxies in dev).
+ * The session itself lives in an httpOnly cookie set by the server, so scripts on the page can never read it.
+ * Only the selected workspace id is remembered here.
+ */
 const WS_KEY = 'hm.workspace';
+const LEGACY_TOKEN_KEY = 'hm.session';
 
 function read(key: string) {
   try {
@@ -18,22 +22,17 @@ function write(key: string, value: string | null) {
   }
 }
 
+// Older versions kept the bearer token in localStorage; remove it so it can't be stolen later.
+write(LEGACY_TOKEN_KEY, null);
+
 export const session = {
-  get token() {
-    return read(TOKEN_KEY);
-  },
   get workspaceId() {
     return read(WS_KEY);
   },
-  set(token: string, workspaceId: string | null) {
-    write(TOKEN_KEY, token);
-    write(WS_KEY, workspaceId);
-  },
-  setWorkspace(id: string) {
+  setWorkspace(id: string | null) {
     write(WS_KEY, id);
   },
   clear() {
-    write(TOKEN_KEY, null);
     write(WS_KEY, null);
   },
 };
@@ -62,10 +61,9 @@ export const setUnauthorizedHandler = (fn: () => void) => (onUnauthorized = fn);
 
 export async function api<T = any>(path: string, opts: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
   const headers: Record<string, string> = { ...(opts.headers ?? {}) };
-  if (session.token) headers.authorization = `Bearer ${session.token}`;
   if (session.workspaceId) headers['x-workspace-id'] = session.workspaceId;
   if (opts.body !== undefined) headers['content-type'] = 'application/json';
-  const res = await fetch(path, { method: opts.method ?? (opts.body !== undefined ? 'POST' : 'GET'), headers, body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined });
+  const res = await fetch(path, { method: opts.method ?? (opts.body !== undefined ? 'POST' : 'GET'), headers, credentials: 'same-origin', body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined });
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   let data: any = text;
@@ -85,9 +83,8 @@ export async function api<T = any>(path: string, opts: { method?: string; body?:
 /** Authenticated file download (CSV error reports). */
 export async function download(path: string, filename: string) {
   const headers: Record<string, string> = {};
-  if (session.token) headers.authorization = `Bearer ${session.token}`;
   if (session.workspaceId) headers['x-workspace-id'] = session.workspaceId;
-  const res = await fetch(path, { headers });
+  const res = await fetch(path, { headers, credentials: 'same-origin' });
   if (!res.ok) throw new ApiError(res.status, 'download_failed', 'Download failed');
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement('a');

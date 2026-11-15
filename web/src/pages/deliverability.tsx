@@ -147,8 +147,9 @@ export function MailboxCards() {
           <div className="mt-4 grid grid-cols-2 gap-3 text-[12px]">
             <div className="rounded-lg bg-canvas p-3">
               <div className="caps">Sent last 24h</div>
-              <div className="tnum mt-1 font-mono text-[13px] font-semibold">{num(m.sent_last_24h)} / {num(m.daily_send_limit)}</div>
-              <div className="mt-1.5"><Meter value={m.sent_last_24h / m.daily_send_limit} /></div>
+              <div className="tnum mt-1 font-mono text-[13px] font-semibold">{num(m.sent_last_24h)} / {num(m.effective_daily_limit)}</div>
+              <div className="mt-1.5"><Meter value={m.sent_last_24h / m.effective_daily_limit} /></div>
+              {m.warming_up && <div className="mt-1.5 text-[11px] text-orange-700">Warming up: today's cap is {num(m.effective_daily_limit)}, doubling weekly toward your limit of {num(m.daily_send_limit)}.</div>}
             </div>
             <div className="rounded-lg bg-canvas p-3">
               <div className="caps">Reply tracking</div>
@@ -184,10 +185,11 @@ export function MailboxCards() {
 
 function LimitModal({ mailbox, onClose }: { mailbox: Mailbox; onClose: () => void }) {
   const [v, setV] = useState(String(mailbox.daily_send_limit));
+  const [warmup, setWarmup] = useState(!!mailbox.warmup_started_at);
   const qc = useQueryClient();
   const toast = useToast();
   const save = useMutation({
-    mutationFn: () => api(`/v1/mailboxes/${mailbox.id}`, { method: 'PATCH', body: { daily_send_limit: Number(v) } }),
+    mutationFn: () => api(`/v1/mailboxes/${mailbox.id}`, { method: 'PATCH', body: { daily_send_limit: Number(v), warmup } }),
     onSuccess: () => { toast('Daily limit updated'); qc.invalidateQueries({ queryKey: ['mailboxes'] }); onClose(); },
   });
   return (
@@ -195,6 +197,10 @@ function LimitModal({ mailbox, onClose }: { mailbox: Mailbox; onClose: () => voi
       <Field label="Messages per rolling 24 hours" hint="Gmail's own caps (≈500 personal, ≈2,000 Workspace) are shared with every other app using this mailbox, so stay comfortably below them. Extra messages wait in the queue.">
         <input className="input" type="number" min={1} max={2000} value={v} onChange={(e) => setV(e.target.value)} />
       </Field>
+      <label className="mt-3 flex items-start gap-2 rounded-lg bg-canvas p-3 text-[13px]">
+        <input type="checkbox" className="mt-0.5 size-4 accent-brand" checked={warmup} onChange={(e) => setWarmup(e.target.checked)} />
+        <span><b>Warm-up schedule.</b> Start at 20 messages a day and double every 7 days until the limit above. Recommended for a new mailbox or domain, because jumping straight to high volume gets mail filtered to spam.</span>
+      </label>
       <ErrorBox error={save.error} />
     </Modal>
   );

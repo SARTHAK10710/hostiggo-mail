@@ -9,7 +9,7 @@ import { IdParams, parse } from '../../lib/http.js';
 import { FakeGoogleApi } from '../../providers/google.js';
 import { enqueue } from '../../jobs/queue.js';
 import { queueSend } from '../sends/service.js';
-import { MAILBOX_PUBLIC_COLS, completeConnect, disconnect, getMailbox, hasReplyScope, sentInLast24h, startConnect } from './service.js';
+import { MAILBOX_PUBLIC_COLS, completeConnect, disconnect, getMailbox, hasReplyScope, sentInLast24h, startConnect, withLimits } from './service.js';
 
 export function mailboxRoutes(app: FastifyInstance, ctx: Ctx) {
   app.get('/v1/mailboxes', async (req) => {
@@ -20,7 +20,7 @@ export function mailboxRoutes(app: FastifyInstance, ctx: Ctx) {
     );
     const now = ctx.clock.now();
     const data = await Promise.all(
-      r.rows.map(async (m: any) => ({ ...m, reply_tracking: hasReplyScope(m), sent_last_24h: await sentInLast24h(ctx.db, m.id, now) })),
+      r.rows.map(async (m: any) => ({ ...withLimits(m, now), reply_tracking: hasReplyScope(m), sent_last_24h: await sentInLast24h(ctx.db, m.id, now) })),
     );
     return { data };
   });
@@ -30,7 +30,7 @@ export function mailboxRoutes(app: FastifyInstance, ctx: Ctx) {
     const { id } = parse(IdParams, req.params);
     const m = await one<any>(ctx.db, `select ${MAILBOX_PUBLIC_COLS} from mailbox_connections where id = $1 and workspace_id = $2`, [id, a.workspaceId]);
     if (!m) throw notFound('Mailbox');
-    return { ...m, reply_tracking: hasReplyScope(m), sent_last_24h: await sentInLast24h(ctx.db, id, ctx.clock.now()) };
+    return { ...withLimits(m, ctx.clock.now()), reply_tracking: hasReplyScope(m), sent_last_24h: await sentInLast24h(ctx.db, id, ctx.clock.now()) };
   });
 
   /** Step 1 of connect: returns Google's consent URL; the frontend redirects the browser there. */
@@ -83,17 +83,20 @@ export function mailboxRoutes(app: FastifyInstance, ctx: Ctx) {
   app.patch('/v1/mailboxes/:id', async (req) => {
     const a = authorize(req, { role: 'admin' });
     const { id } = parse(IdParams, req.params);
-    const body = parse(z.object({ display_name: z.string().max(200).nullish(), daily_send_limit: z.number().int().min(1).max(2000).optional() }), req.body);
+    const body = parse(z.object({ display_name: z.string().max(200).nullish(), daily_send_limit: z.number().int().min(1).max(2000).optional(), warmup: z.boolean().optional() }), req.body);
     await getMailbox(ctx.db, a.workspaceId, id);
     return ctx.db.tx(async (tx) => {
       const m = await one(
         tx,
-        `update mailbox_connections set display_name = coalesce($3, display_name), daily_send_limit = coalesce($4, daily_send_limit), updated_at = now()
+        `update mailbox_connections set display_name = coalesce($3, display_name), daily_send_limit = coalesce($4, daily_send_limit),
+           warmup_started_at = case when $5::boolean is null then warmup_started_at
+                                    when $5::boolean then coalesce(warmup_started_at, now()) else null end,
+           updated_at = now()
          where id = $1 and workspace_id = $2 returning ${MAILBOX_PUBLIC_COLS}`,
-        [id, a.workspaceId, body.display_name ?? null, body.daily_send_limit ?? null],
+        [id, a.workspaceId, body.display_name ?? null, body.daily_send_limit ?? null, body.warmup ?? null],
       );
       await audit(tx, a, 'mailbox.updated', { type: 'mailbox', id }, body);
-      return m;
+      return withLimits(m as any, ctx.clock.now());
     });
   });
 
