@@ -35,6 +35,7 @@ export async function harness(env: Record<string, string> = {}): Promise<Harness
     GMAIL_REPLY_TRACKING: 'true',
     PUBSUB_VERIFICATION_TOKEN: 'pubsub-test-token',
     PROVIDER_WEBHOOK_SECRETS: 'acme-esp:whsec_test',
+    AUTH_RATE_LIMIT_MAX: '1000',
     API_BASE_URL: 'https://api.test',
     APP_BASE_URL: 'http://app.test',
     ...env,

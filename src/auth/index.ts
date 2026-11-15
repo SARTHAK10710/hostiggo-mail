@@ -27,6 +27,51 @@ declare module 'fastify' {
   }
 }
 
+// ── Session cookie (dashboard) ───────────────────────────────────────
+// The dashboard keeps its session in an httpOnly cookie so page scripts can never read it (XSS-safe).
+// API clients keep using `Authorization: Bearer` / `X-API-Key`.
+export const SESSION_COOKIE = 'hm_session';
+
+export function readCookie(req: FastifyRequest, name: string): string | undefined {
+  for (const part of (req.headers.cookie ?? '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) {
+      try {
+        return decodeURIComponent(part.slice(i + 1).trim());
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+export function sessionCookie(ctx: Ctx, token: string, expires: Date) {
+  const secure = ctx.config.API_BASE_URL.startsWith('https://') ? '; Secure' : '';
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires.toUTCString()}${secure}`;
+}
+
+export function clearSessionCookie(ctx: Ctx) {
+  const secure = ctx.config.API_BASE_URL.startsWith('https://') ? '; Secure' : '';
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
+}
+
+/** The session token on a request, from Authorization, X-API-Key or the dashboard cookie. */
+export function extractToken(req: FastifyRequest): { token: string; fromCookie: boolean } | undefined {
+  const header = req.headers.authorization;
+  const apiKeyHeader = req.headers['x-api-key'];
+  const explicit = typeof apiKeyHeader === 'string' ? apiKeyHeader : header?.startsWith('Bearer ') ? header.slice(7).trim() : undefined;
+  if (explicit) return { token: explicit, fromCookie: false };
+  const cookie = readCookie(req, SESSION_COOKIE);
+  return cookie ? { token: cookie, fromCookie: true } : undefined;
+}
+
+function allowedOrigins(ctx: Ctx) {
+  const set = new Set(ctx.config.corsOrigins);
+  for (const u of [ctx.config.APP_BASE_URL, ctx.config.API_BASE_URL]) set.add(new URL(u).origin);
+  return set;
+}
+
 // ── Sessions ─────────────────────────────────────────────────────────
 export async function createSession(ctx: Ctx, q: Queryable, userId: string) {
   const token = `hms_${randomToken(32)}`;
@@ -50,10 +95,14 @@ export async function createApiKey(q: Queryable, workspaceId: string, name: stri
 
 /** Resolves the bearer token / API key on a request into a principal (or none). */
 export async function resolvePrincipal(ctx: Ctx, req: FastifyRequest): Promise<Principal | undefined> {
-  const header = req.headers.authorization;
-  const apiKeyHeader = req.headers['x-api-key'];
-  const token = typeof apiKeyHeader === 'string' ? apiKeyHeader : header?.startsWith('Bearer ') ? header.slice(7).trim() : undefined;
-  if (!token) return undefined;
+  const found = extractToken(req);
+  if (!found) return undefined;
+  const { token } = found;
+  // Cookie-authenticated, state-changing requests must come from our own origins (CSRF defence in depth on top of SameSite=Lax).
+  if (found.fromCookie && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    const origin = req.headers.origin;
+    if (origin && !allowedOrigins(ctx).has(origin)) throw forbidden('Cross-origin request blocked');
+  }
 
   if (token.startsWith('hm_live_')) {
     const key = await one<{ id: string; workspace_id: string; scopes: string[] }>(
@@ -72,7 +121,12 @@ export async function resolvePrincipal(ctx: Ctx, req: FastifyRequest): Promise<P
      where s.token_hash = $1 and s.expires_at > $2`,
     [sha256(token), ctx.clock.now()],
   );
-  if (!session) throw unauthorized('Session expired or invalid');
+  if (!session) {
+    // A stale dashboard cookie can't be cleared by page scripts (it is httpOnly), so it must never block
+    // signing in again: treat it as "not signed in". Explicit Bearer tokens still get a clear 401.
+    if (found.fromCookie) return undefined;
+    throw unauthorized('Session expired or invalid');
+  }
 
   // Workspace selection: explicit header, or the only workspace the user belongs to.
   const wsHeader = req.headers['x-workspace-id'];

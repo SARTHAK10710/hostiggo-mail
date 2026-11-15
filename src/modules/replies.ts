@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { Ctx } from '../context.js';
-import { one } from '../db/index.js';
+import { one, type Queryable } from '../db/index.js';
 import { enqueue } from '../jobs/queue.js';
 import { safeEqual } from '../lib/crypto.js';
 import { normalizeEmail, parseAddress } from '../lib/email.js';
@@ -20,7 +20,7 @@ const HEADERS = ['From', 'To', 'Subject', 'Date', 'Message-ID', 'In-Reply-To', '
 
 const googleJwks = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'));
 
-export type Classification = 'reply' | 'auto_reply' | 'bounce' | 'internal' | 'unmatched';
+export type Classification = 'reply' | 'unsubscribe' | 'auto_reply' | 'bounce' | 'internal' | 'unmatched';
 
 function headerMap(meta: GmailMessageMeta): Record<string, string> {
   const out: Record<string, string> = {};
@@ -47,6 +47,21 @@ export function looksAutomatic(h: Record<string, string>) {
     'x-autorespond' in h ||
     /^(auto(matic)?[ -]?reply|out of (the )?office|autoreply|abwesenheit|absence)/i.test((h['subject'] ?? '').trim())
   );
+}
+
+const UNSUBSCRIBE_RE =
+  /^(please\s+)?(un-?subscribe( me)?|stop( (emailing|sending|mailing)( me)?)?|remove( me)?|opt[- ]?out|cancel (my )?subscription)([\s.!,]*(thanks|thank you))?[\s.!,]*$/i;
+
+/**
+ * True when a message is a plain "unsubscribe" request: the subject (what Gmail's mailto
+ * List-Unsubscribe sends) or the start of the body is *only* that keyword, so ordinary
+ * replies such as "stop by tomorrow" are never treated as opt-outs.
+ */
+export function looksLikeUnsubscribe(subject: string | undefined, snippet: string | undefined) {
+  const subj = (subject ?? '').replace(/^\s*((re|fwd?|aw)\s*:\s*)+/i, '').trim();
+  if (UNSUBSCRIBE_RE.test(subj)) return true;
+  const firstLine = (snippet ?? '').split(/\r?\n/)[0].replace(/\s*On .{0,120} wrote:.*$/i, '').trim();
+  return UNSUBSCRIBE_RE.test(firstLine);
 }
 
 async function processMessage(ctx: Ctx, mailbox: Mailbox, accessToken: string, gmailId: string, internalEmails: Set<string>) {
@@ -105,6 +120,14 @@ async function processMessage(ctx: Ctx, mailbox: Mailbox, accessToken: string, g
     } else if (looksAutomatic(h)) {
       classification = 'auto_reply';
       send = byRef[0] ?? byThread.find((s) => s.to_email === from) ?? null;
+    } else if (from && looksLikeUnsubscribe(h['subject'], meta.snippet) && (await isKnownAddress(tx, mailbox.workspace_id, from, byRef, byThread))) {
+      // Reply-to-unsubscribe (mailto List-Unsubscribe, or a person typing "unsubscribe").
+      classification = 'unsubscribe';
+      send = byRef.find((s) => s.to_email === from) ?? byThread.find((s) => s.to_email === from) ?? null;
+      await addSuppression(tx, mailbox.workspace_id, from, 'unsubscribed', `reply:${gmailId}`);
+      if (send) {
+        await recordEvent(tx, { workspaceId: mailbox.workspace_id, sendId: send.id, contactId: send.contact_id, type: 'unsubscribed', source: 'gmail_sync', providerEventId: gmailId, occurredAt: receivedAt, metadata: { via: 'reply' } });
+      }
     } else {
       send = byRef.find((s) => s.rfc822_message_id === messageIds(h['in-reply-to'])[0]) ?? byRef[0] ?? byThread.find((s) => s.to_email === from) ?? null;
       // A subject match is never enough: we need a thread/Message-ID link and the recipient as sender (or an explicit reference).
@@ -130,6 +153,12 @@ async function processMessage(ctx: Ctx, mailbox: Mailbox, accessToken: string, g
       [mailbox.workspace_id, mailbox.id, gmailId, meta.threadId, from, classification, send?.id ?? null, receivedAt],
     );
   });
+}
+
+/** Only act on an opt-out from someone we actually email: a known contact or a recipient of one of our sends. */
+async function isKnownAddress(q: Queryable, workspaceId: string, email: string, ...sendLists: { to_email: string }[][]) {
+  if (sendLists.some((l) => l.some((s) => s.to_email === email))) return true;
+  return !!(await one(q, `select 1 from contacts where workspace_id = $1 and email = $2 and deleted_at is null`, [workspaceId, email]));
 }
 
 /** Job: pull mailbox history since the stored cursor and attribute replies/bounces. */

@@ -8,6 +8,10 @@ const ctx = await createContext(config);
 const app = await buildApp(ctx);
 const worker = config.RUN_WORKER_IN_PROCESS ? createWorker(ctx) : null;
 
+if (config.NODE_ENV === 'production' && !config.UNSUBSCRIBE_FOOTER) {
+  ctx.log.warn('UNSUBSCRIBE_FOOTER is false: marketing email has no visible unsubscribe link. Set it to true.');
+}
+
 await app.listen({ port: config.PORT, host: config.HOST });
 worker?.start();
 ctx.log.info(

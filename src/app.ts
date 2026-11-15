@@ -1,5 +1,7 @@
 import cors from '@fastify/cors';
-import Fastify, { type FastifyInstance } from 'fastify';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
+import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import { resolvePrincipal } from './auth/index.js';
 import type { Ctx } from './context.js';
 import { AppError } from './lib/errors.js';
@@ -7,6 +9,7 @@ import { analyticsRoutes } from './modules/analytics.js';
 import { automationRoutes } from './modules/automations/routes.js';
 import { campaignRoutes } from './modules/campaigns.js';
 import { importRoutes } from './modules/contacts/imports.js';
+import { privacyRoutes } from './modules/contacts/privacy.js';
 import { contactRoutes } from './modules/contacts/routes.js';
 import { eventRoutes } from './modules/events.js';
 import { mailboxRoutes } from './modules/mailboxes/routes.js';
@@ -22,11 +25,39 @@ import { serveWebApp, systemRoutes } from './modules/system.js';
 export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   const app = Fastify({
     loggerInstance: ctx.log,
+    // One log line per request drowns real warnings; opt in with REQUEST_LOGGING=true.
+    logController: new LogController({ disableRequestLogging: !ctx.config.REQUEST_LOGGING }),
     bodyLimit: 2 * 1024 * 1024,
     trustProxy: true,
     // Signed unsubscribe tokens in /u/:token are longer than the 100-char default.
     routerOptions: { maxParamLength: 2048 },
   }) as unknown as FastifyInstance;
+
+  const prod = ctx.config.NODE_ENV === 'production';
+  await app.register(helmet, {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+        imgSrc: ["'self'", 'data:'],
+        connectSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        frameAncestors: ["'none'"],
+        // Forms may redirect on to the dashboard (e.g. the dev consent screen -> callback -> APP_BASE_URL).
+        formAction: ["'self'", new URL(ctx.config.APP_BASE_URL).origin, ...ctx.config.corsOrigins],
+        // Forcing https would break the http://localhost dev setup.
+        upgradeInsecureRequests: prod ? [] : null,
+      },
+    },
+    strictTransportSecurity: prod,
+  });
+  await app.register(rateLimit, {
+    global: false,
+    errorResponseBuilder: (_req, ctxInfo) => new AppError(429, 'rate_limited', `Too many attempts. Try again in ${Math.ceil(ctxInfo.ttl / 1000)}s.`),
+  });
 
   await app.register(cors, {
     origin: ctx.config.corsOrigins,
@@ -74,6 +105,7 @@ export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   mailboxRoutes(app, ctx);
   suppressionRoutes(app, ctx);
   contactRoutes(app, ctx);
+  privacyRoutes(app, ctx);
   importRoutes(app, ctx);
   templateRoutes(app, ctx);
   sendRoutes(app, ctx);

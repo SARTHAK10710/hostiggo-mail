@@ -27,6 +27,8 @@ export interface GmailMessageMeta {
   threadId: string;
   labelIds?: string[];
   internalDate?: string;
+  /** Short plain-text preview Gmail returns even for format=metadata. */
+  snippet?: string;
   payload?: { headers?: GmailHeader[]; mimeType?: string };
 }
 export interface GmailHistoryPage {
@@ -316,13 +318,14 @@ export class FakeGoogleApi implements GoogleApi {
   }
 
   /** Test helper: deliver an inbound message into the connected mailbox. */
-  receive(msg: { threadId: string; headers: Record<string, string>; labelIds?: string[]; mimeType?: string }) {
+  receive(msg: { threadId: string; headers: Record<string, string>; labelIds?: string[]; mimeType?: string; snippet?: string }) {
     const id = `in-${randomBytes(6).toString('hex')}`;
     this.inbox.push({
       id,
       threadId: msg.threadId,
       labelIds: msg.labelIds ?? ['INBOX', 'UNREAD'],
       internalDate: String(this.now().getTime()),
+      snippet: msg.snippet,
       payload: { mimeType: msg.mimeType ?? 'text/plain', headers: Object.entries(msg.headers).map(([name, value]) => ({ name, value })) },
     });
     this.historyCounter += 1;

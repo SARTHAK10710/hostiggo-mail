@@ -20,12 +20,14 @@ export async function fireTrigger(
   contactId: string,
   occurrenceKey: string,
   now: Date,
+  opts: { onlyAutomationId?: string } = {},
 ): Promise<string[]> {
   const candidates = await q.query<{ automation_id: string; version_id: string; definition: Definition }>(
     `select a.id as automation_id, v.id as version_id, v.definition
      from automations a join automation_versions v on v.id = a.current_version_id
-     where a.workspace_id = $1 and a.status = 'active' and v.definition->'trigger'->>'type' = $2`,
-    [workspaceId, occurrence.type],
+     where a.workspace_id = $1 and a.status = 'active' and v.definition->'trigger'->>'type' = $2
+       and ($3::uuid is null or a.id = $3::uuid)`,
+    [workspaceId, occurrence.type, opts.onlyAutomationId ?? null],
   );
   const matching = candidates.rows.filter(({ definition: d }) => {
     const t = d.trigger!;

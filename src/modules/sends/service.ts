@@ -7,7 +7,8 @@ import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { newMessageId } from '../../lib/mime.js';
 import { contactContext, renderMessage } from '../../lib/template.js';
 import { ProviderError, providerFor } from '../../providers/index.js';
-import { nextCapacityAt, type Mailbox } from '../mailboxes/service.js';
+import { sendAlert } from '../../lib/alerts.js';
+import { effectiveDailyLimit, nextCapacityAt, type Mailbox } from '../mailboxes/service.js';
 import { HARD_REASONS, suppressionReasons } from '../suppressions.js';
 
 export interface SendRow {
@@ -138,7 +139,12 @@ async function mailboxHealthy(ctx: Ctx, q: Queryable, mailbox: Mailbox): Promise
   if (!r || r.sent < 20) return true;
   const healthy = r.bounced / r.sent <= ctx.config.MAX_BOUNCE_RATE && r.complained / r.sent <= ctx.config.MAX_COMPLAINT_RATE;
   const health = healthy ? 'healthy' : 'unhealthy';
-  if (health !== mailbox.health) await q.query(`update mailbox_connections set health = $2, updated_at = now() where id = $1`, [mailbox.id, health]);
+  if (health !== mailbox.health) {
+    await q.query(`update mailbox_connections set health = $2, updated_at = now() where id = $1`, [mailbox.id, health]);
+    if (!healthy) {
+      sendAlert(ctx, `Marketing sends from ${mailbox.email} are paused: ${r.bounced} bounces and ${r.complained} complaints in ${r.sent} sends over the last 7 days.`);
+    }
+  }
   return healthy;
 }
 
@@ -191,8 +197,10 @@ async function decide(ctx: Ctx, q: Queryable, send: SendRow, mailbox: Mailbox | 
     `select count(*)::int as n from sends where mailbox_id = $1 and id <> $3 and (accepted_at > $2 or status = 'sending')`,
     [mailbox.id, new Date(now.getTime() - 86_400_000), send.id],
   );
-  if ((used?.n ?? 0) >= mailbox.daily_send_limit) {
-    return { action: 'defer', code: 'rate_limited', message: `Mailbox daily limit (${mailbox.daily_send_limit}) reached; will send when capacity frees up`, until: await nextCapacityAt(q, mailbox.id, now) };
+  const limit = effectiveDailyLimit(mailbox, now);
+  if ((used?.n ?? 0) >= limit) {
+    const warming = limit < mailbox.daily_send_limit;
+    return { action: 'defer', code: 'rate_limited', message: `Mailbox daily limit (${limit}${warming ? ', warm-up' : ''}) reached; will send when capacity frees up`, until: await nextCapacityAt(q, mailbox.id, now) };
   }
   return { action: 'send' };
 }
