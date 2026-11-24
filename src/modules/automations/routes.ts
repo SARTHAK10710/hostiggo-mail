@@ -10,6 +10,7 @@ import { contactContext } from '../../lib/template.js';
 import { queueSend } from '../sends/service.js';
 import { latestTemplateVersion } from '../templates.js';
 import { DefinitionSchema, type Definition } from './definition.js';
+import { fireTrigger } from './triggers.js';
 
 async function load(tx: { query: Tx['query'] }, workspaceId: string, id: string) {
   const a = await one<any>(tx, `select * from automations where id = $1 and workspace_id = $2`, [id, workspaceId]);
@@ -143,6 +144,7 @@ export function automationRoutes(app: FastifyInstance, ctx: Ctx) {
   app.post('/v1/automations/:id/publish', async (req) => {
     const a = authorize(req, { role: 'member' });
     const { id } = parse(IdParams, req.params);
+    const opts = parse(z.object({ enroll_existing: z.boolean().default(false) }), req.body ?? {});
     return ctx.db.tx(async (tx) => {
       const auto = await load(tx, a.workspaceId, id);
       if (auto.status === 'archived') throw conflict('archived', 'Archived automations cannot be published');
@@ -163,8 +165,23 @@ export function automationRoutes(app: FastifyInstance, ctx: Ctx) {
       }
       const status = auto.status === 'paused' ? 'paused' : 'active';
       await tx.query(`update automations set current_version_id = $2, status = $3, updated_at = now() where id = $1`, [id, v!.id, status]);
-      await audit(tx, a, 'automation.published', { type: 'automation', id }, { version: v!.version });
-      return { id, status, version: v!.version, version_id: v!.id };
+      // Optionally enroll people who were already in the trigger list before this was published.
+      let enrolled_existing = 0;
+      if (opts.enroll_existing && status === 'active' && d.trigger?.type === 'list_joined') {
+        const members = await tx.query<{ contact_id: string }>(
+          `select lm.contact_id from list_memberships lm join contacts c on c.id = lm.contact_id
+           where lm.list_id = $1 and lm.workspace_id = $2 and c.deleted_at is null order by lm.added_at`,
+          [d.trigger.list_id, a.workspaceId],
+        );
+        const now = ctx.clock.now();
+        for (const m of members.rows) {
+          const created = await fireTrigger(tx, a.workspaceId, { type: 'list_joined', list_id: d.trigger.list_id }, m.contact_id,
+            `list:${d.trigger.list_id}:${m.contact_id}:existing:${v!.id}`, now, { onlyAutomationId: id });
+          enrolled_existing += created.length;
+        }
+      }
+      await audit(tx, a, 'automation.published', { type: 'automation', id }, { version: v!.version, enrolled_existing });
+      return { id, status, version: v!.version, version_id: v!.id, enrolled_existing };
     });
   });
 

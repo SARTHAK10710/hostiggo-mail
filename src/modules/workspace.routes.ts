@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { API_KEY_SCOPES, audit, authorize, createApiKey, createSession, requireUser } from '../auth/index.js';
+import { API_KEY_SCOPES, audit, authorize, clearSessionCookie, createApiKey, createSession, extractToken, requireUser, sessionCookie } from '../auth/index.js';
 import type { Ctx } from '../context.js';
 import { one } from '../db/index.js';
 import { hashPassword, sha256, verifyPassword } from '../lib/crypto.js';
@@ -9,14 +9,16 @@ import { AppError, badRequest, conflict, notFound, unauthorized } from '../lib/e
 import { randomToken } from '../lib/crypto.js';
 import { IdParams, Pagination, parse } from '../lib/http.js';
 
-const Credentials = z.object({ email: z.string().email(), password: z.string().min(10).max(200) });
+/** 429 instead of a hang when someone hammers the credential endpoints. */
+const authLimit = (ctx: Ctx) => ({
+  config: { rateLimit: { max: ctx.config.AUTH_RATE_LIMIT_MAX, timeWindow: ctx.config.AUTH_RATE_LIMIT_WINDOW_SECONDS * 1000, hook: 'preHandler' as const } },
+});
 
-/** Brute-force protection for sign-in / sign-up / invite lookups (per IP). */
-const AUTH_RATE_LIMIT = { rateLimit: { max: 10, timeWindow: '1 minute' } };
+const Credentials = z.object({ email: z.string().email(), password: z.string().min(10).max(200) });
 
 /** Phase 1: sign-in, workspaces, membership/roles, API keys, audit log. */
 export function workspaceRoutes(app: FastifyInstance, ctx: Ctx) {
-  app.post('/v1/auth/signup', { config: AUTH_RATE_LIMIT }, async (req, reply) => {
+  app.post('/v1/auth/signup', authLimit(ctx), async (req, reply) => {
     const body = parse(
       Credentials.extend({
         name: z.string().max(200).optional(),
@@ -72,12 +74,12 @@ export function workspaceRoutes(app: FastifyInstance, ctx: Ctx) {
       const session = await createSession(ctx, tx, user!.id);
       return { user: { id: user!.id, email, name: body.name ?? null }, workspace: { ...ws, role }, session };
     });
-    reply.code(201);
+    reply.code(201).header('set-cookie', sessionCookie(ctx, result.session.token, new Date(result.session.expires_at)));
     return result;
   });
 
   /** Public: what an invitation link is for (shown on the join screen). */
-  app.get('/v1/invites/lookup', { config: AUTH_RATE_LIMIT }, async (req) => {
+  app.get('/v1/invites/lookup', authLimit(ctx), async (req) => {
     const { token } = parse(z.object({ token: z.string().min(10).max(200) }), req.query);
     const inv = await one<{ email: string; role: string; workspace_name: string }>(
       ctx.db,
@@ -91,7 +93,7 @@ export function workspaceRoutes(app: FastifyInstance, ctx: Ctx) {
 
   app.get('/v1/auth/config', async () => ({ allow_signups: ctx.config.ALLOW_SIGNUPS }));
 
-  app.post('/v1/auth/login', { config: AUTH_RATE_LIMIT }, async (req) => {
+  app.post('/v1/auth/login', authLimit(ctx), async (req, reply) => {
     const body = parse(Credentials.extend({ password: z.string().min(1) }), req.body);
     const user = await one<{ id: string; email: string; name: string | null; password_hash: string }>(
       ctx.db,
@@ -101,14 +103,15 @@ export function workspaceRoutes(app: FastifyInstance, ctx: Ctx) {
     // Same error for unknown user / wrong password.
     if (!user || !(await verifyPassword(body.password, user.password_hash))) throw unauthorized('Invalid email or password');
     const session = await createSession(ctx, ctx.db, user.id);
+    reply.header('set-cookie', sessionCookie(ctx, session.token, new Date(session.expires_at)));
     return { user: { id: user.id, email: user.email, name: user.name }, session };
   });
 
   app.post('/v1/auth/logout', async (req, reply) => {
     requireUser(req);
-    const token = req.headers.authorization!.slice(7).trim();
+    const token = extractToken(req)!.token;
     await ctx.db.query(`delete from sessions where token_hash = $1`, [sha256(token)]);
-    reply.code(204);
+    reply.header('set-cookie', clearSessionCookie(ctx)).code(204);
   });
 
   app.get('/v1/me', async (req) => {

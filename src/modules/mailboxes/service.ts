@@ -2,6 +2,7 @@ import { audit, type Actor } from '../../auth/index.js';
 import type { Ctx } from '../../context.js';
 import { one, type Queryable } from '../../db/index.js';
 import { enqueue } from '../../jobs/queue.js';
+import { sendAlert } from '../../lib/alerts.js';
 import { randomToken, signToken, verifyToken } from '../../lib/crypto.js';
 import { normalizeEmail } from '../../lib/email.js';
 import { AppError, badRequest, notFound } from '../../lib/errors.js';
@@ -19,6 +20,7 @@ export interface Mailbox {
   health: 'healthy' | 'unhealthy';
   last_error: string | null;
   daily_send_limit: number;
+  warmup_started_at: Date | null;
   history_id: string | null;
   watch_expires_at: Date | null;
   watch_renewed_at: Date | null;
@@ -26,8 +28,33 @@ export interface Mailbox {
 }
 
 /** Columns safe to return to the dashboard (never the token). */
-export const MAILBOX_PUBLIC_COLS = `id, provider, email, display_name, scopes, status, health, last_error, daily_send_limit,
+export const MAILBOX_PUBLIC_COLS = `id, provider, email, display_name, scopes, status, health, last_error, daily_send_limit, warmup_started_at,
   watch_expires_at, last_synced_at, created_at, updated_at, disconnected_at`;
+
+/** Warm-up schedule: 20/day in week 1, doubling every 7 days, never above the mailbox's own daily limit. */
+export const WARMUP_START = 20;
+
+export function warmupCap(startedAt: Date | string | null | undefined, now: Date): number | null {
+  if (!startedAt) return null;
+  const days = Math.max(0, Math.floor((now.getTime() - new Date(startedAt).getTime()) / 86_400_000));
+  return WARMUP_START * 2 ** Math.min(Math.floor(days / 7), 20);
+}
+
+export function effectiveDailyLimit(m: { daily_send_limit: number; warmup_started_at?: Date | string | null }, now: Date): number {
+  const cap = warmupCap(m.warmup_started_at, now);
+  return cap === null ? m.daily_send_limit : Math.min(m.daily_send_limit, cap);
+}
+
+/** The part of a daily limit marketing may use; the rest is kept for booking / transactional mail. */
+export function marketingShare(ctx: Pick<Ctx, 'config'>, dailyLimit: number): number {
+  return Math.floor(dailyLimit * (1 - ctx.config.TRANSACTIONAL_RESERVE_PERCENT / 100));
+}
+
+/** Adds today's allowed volume (lower than the configured limit while warming up) to a mailbox row. */
+export function withLimits<T extends { daily_send_limit: number; warmup_started_at?: Date | string | null }>(m: T, now: Date) {
+  const effective = effectiveDailyLimit(m, now);
+  return { ...m, effective_daily_limit: effective, warming_up: effective < m.daily_send_limit };
+}
 
 export const hasReplyScope = (m: Pick<Mailbox, 'scopes'>) => m.scopes.includes(GMAIL_METADATA_SCOPE);
 
@@ -99,9 +126,10 @@ export async function completeConnect(ctx: Ctx, code: string, state: string): Pr
       row = await one<Mailbox>(
         tx,
         `insert into mailbox_connections(workspace_id, provider, provider_account_id, email, display_name,
-           encrypted_refresh_token, scopes, daily_send_limit, connected_by)
-         values ($1, 'gmail', $2, $3, $4, $5, $6, $7, $8) returning *`,
-        [st.workspace_id, identity.sub, email, identity.name ?? null, encrypted, gmailScopes, ctx.config.GMAIL_DEFAULT_DAILY_LIMIT, st.user_id],
+           encrypted_refresh_token, scopes, daily_send_limit, connected_by, warmup_started_at)
+         values ($1, 'gmail', $2, $3, $4, $5, $6, $7, $8, $9) returning *`,
+        [st.workspace_id, identity.sub, email, identity.name ?? null, encrypted, gmailScopes, ctx.config.GMAIL_DEFAULT_DAILY_LIMIT, st.user_id,
+          ctx.config.WARMUP_DEFAULT ? ctx.clock.now() : null],
       );
     }
     await audit(tx, { workspaceId: st.workspace_id, type: 'user', id: st.user_id }, existing ? 'mailbox.reconnected' : 'mailbox.connected',
@@ -137,6 +165,7 @@ export async function getAccessToken(ctx: Ctx, mailbox: Mailbox): Promise<string
     if (err instanceof GoogleApiError && err.authRevoked) {
       await markMailbox(ctx.db, mailbox.id, 'reauth_required', 'Google access was revoked or expired. Reconnect this mailbox.');
       await audit(ctx.db, { workspaceId: mailbox.workspace_id, type: 'system', id: null }, 'mailbox.auth_lost', { type: 'mailbox', id: mailbox.id });
+      sendAlert(ctx, `Mailbox ${mailbox.email} lost Google access and must be reconnected. Sending from it is paused.`);
     }
     throw err;
   }

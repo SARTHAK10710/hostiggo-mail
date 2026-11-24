@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
 const bool = z
@@ -10,6 +11,13 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().default(4000),
   HOST: z.string().default('0.0.0.0'),
   LOG_LEVEL: z.string().default('info'),
+  /** Optional Slack-compatible incoming webhook that receives operational alerts (mailbox needs reconnect, ...). */
+  ALERT_WEBHOOK_URL: z.string().default(''),
+
+  /** Max sign-up / sign-in attempts per IP per minute. */
+  AUTH_RATE_LIMIT_MAX: z.coerce.number().default(10),
+  /** Window for the limit above. */
+  AUTH_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().default(60),
 
   /** Public URL of this API (used for OAuth redirect + unsubscribe links). */
   API_BASE_URL: z.string().url().default('http://localhost:4000'),
@@ -43,6 +51,8 @@ const EnvSchema = z.object({
   PUBSUB_SERVICE_ACCOUNT_EMAIL: z.string().default(''),
   /** Dev fallback: shared ?token= on the push endpoint when OIDC is not configured. */
   PUBSUB_VERIFICATION_TOKEN: z.string().default(''),
+  /** Newly connected mailboxes start in warm-up (20/day, doubling every 7 days up to their daily limit). */
+  WARMUP_DEFAULT: bool,
   /** Conservative per-mailbox cap; Gmail documents 500 (consumer) / 2,000 (Workspace) per day. */
   GMAIL_DEFAULT_DAILY_LIMIT: z.coerce.number().default(400),
   /** Hard ceiling on a single marketing campaign sent through Gmail. */
@@ -72,7 +82,7 @@ const EnvSchema = z.object({
     .string()
     .optional()
     .transform((v) => !(v === 'false' || v === '0')),
-  /** Per-IP request limits (auth endpoints are much stricter). */
+  /** General per-IP limit of 600 requests/min. Sign-in/sign-up are always limited (AUTH_RATE_LIMIT_MAX). */
   RATE_LIMIT: z
     .string()
     .optional()
@@ -97,7 +107,22 @@ export type Config = z.infer<typeof EnvSchema> & {
   corsOrigins: string[];
 };
 
-export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+/** Secrets that may be supplied as a file path via `<NAME>_FILE` (Docker/Kubernetes/Render secret files). */
+const FILE_SECRETS = ['APP_SECRET', 'TOKEN_ENCRYPTION_KEYS', 'GOOGLE_CLIENT_SECRET', 'DATABASE_URL', 'PROVIDER_WEBHOOK_SECRETS', 'PUBSUB_VERIFICATION_TOKEN'];
+
+export function resolveFileSecrets(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  const out = { ...env };
+  for (const name of FILE_SECRETS) {
+    const path = env[`${name}_FILE`];
+    if (path && !env[name]) out[name] = readFileSync(path, 'utf8').trim();
+  }
+  return out;
+}
+
+export function loadConfig(rawEnv: Record<string, string | undefined> = process.env): Config {
+  const env = resolveFileSecrets(rawEnv);
+  // REQUEST_LOGGING was the PR #1 name for LOG_REQUESTS; keep accepting it.
+  if (env.LOG_REQUESTS === undefined && env.REQUEST_LOGGING !== undefined) env.LOG_REQUESTS = env.REQUEST_LOGGING;
   const parsed = EnvSchema.parse(env);
   const encryptionKeys = parsed.TOKEN_ENCRYPTION_KEYS.split(',')
     .map((s) => s.trim())
@@ -121,6 +146,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     if (parsed.APP_SECRET.startsWith('dev-only')) throw new Error('Set APP_SECRET in production');
     if (encryptionKeys.some((k) => k.id === 'dev')) throw new Error('Set TOKEN_ENCRYPTION_KEYS in production');
     if (parsed.DATABASE_URL.startsWith('pglite')) throw new Error('Use a real Postgres DATABASE_URL in production');
+    if (!parsed.API_BASE_URL.startsWith('https://')) throw new Error('API_BASE_URL must be a public https:// URL in production');
+    if (!parsed.APP_BASE_URL.startsWith('https://')) throw new Error('APP_BASE_URL must be an https:// URL in production');
   }
 
   return {

@@ -1,7 +1,7 @@
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import { resolvePrincipal } from './auth/index.js';
 import type { Ctx } from './context.js';
 import { AppError } from './lib/errors.js';
@@ -9,6 +9,7 @@ import { analyticsRoutes } from './modules/analytics.js';
 import { automationRoutes } from './modules/automations/routes.js';
 import { campaignRoutes } from './modules/campaigns.js';
 import { importRoutes } from './modules/contacts/imports.js';
+import { privacyRoutes } from './modules/contacts/privacy.js';
 import { contactRoutes } from './modules/contacts/routes.js';
 import { eventRoutes } from './modules/events.js';
 import { mailboxRoutes } from './modules/mailboxes/routes.js';
@@ -28,13 +29,15 @@ import { backupRoutes } from './modules/backups.js';
 export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   const app = Fastify({
     loggerInstance: ctx.log,
+    // One log line per request drowns real warnings; opt in with LOG_REQUESTS=true.
+    logController: new LogController({ disableRequestLogging: !ctx.config.LOG_REQUESTS }),
     bodyLimit: 2 * 1024 * 1024,
     trustProxy: true,
-    disableRequestLogging: !ctx.config.LOG_REQUESTS,
     // Signed unsubscribe tokens in /u/:token are longer than the 100-char default.
     routerOptions: { maxParamLength: 2048 },
   }) as unknown as FastifyInstance;
 
+  const prod = ctx.config.NODE_ENV === 'production';
   // Security headers. CSP allows our own scripts, Google Fonts, inline styles (React style props,
   // server-rendered pages) and remote images inside sandboxed email previews.
   await app.register(helmet, {
@@ -47,21 +50,28 @@ export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
         imgSrc: ["'self'", 'data:', 'https:'],
         connectSrc: ["'self'"],
         frameSrc: ["'self'"],
-        frameAncestors: ["'none'"],
-        formAction: ["'self'"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
-        upgradeInsecureRequests: null, // keep plain-http localhost working
+        frameAncestors: ["'none'"],
+        // Forms may redirect on to the dashboard (e.g. the dev consent screen -> callback -> APP_BASE_URL).
+        formAction: ["'self'", new URL(ctx.config.APP_BASE_URL).origin, ...ctx.config.corsOrigins],
+        // Forcing https would break the http://localhost dev setup.
+        upgradeInsecureRequests: prod ? [] : null,
       },
     },
     crossOriginEmbedderPolicy: false,
     hsts: ctx.config.API_BASE_URL.startsWith('https://') ? { maxAge: 15552000 } : false,
   });
 
-  // Per-IP limits; auth routes opt into much stricter limits via route config.
-  if (ctx.config.RATE_LIMIT) {
-    await app.register(rateLimit, { global: true, max: 600, timeWindow: '1 minute', allowList: (req) => req.url === '/health' });
-  }
+  // Credential endpoints always have a strict per-IP limit (AUTH_RATE_LIMIT_MAX, via route config);
+  // RATE_LIMIT=true adds a general 600/min per-IP limit on everything else.
+  await app.register(rateLimit, {
+    global: ctx.config.RATE_LIMIT,
+    max: 600,
+    timeWindow: '1 minute',
+    allowList: (req) => req.url === '/health',
+    errorResponseBuilder: (_req, ctxInfo) => new AppError(429, 'rate_limited', `Too many attempts. Try again in ${Math.ceil(ctxInfo.ttl / 1000)}s.`),
+  });
 
   await app.register(cors, {
     origin: ctx.config.corsOrigins,
@@ -109,6 +119,7 @@ export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   mailboxRoutes(app, ctx);
   suppressionRoutes(app, ctx);
   contactRoutes(app, ctx);
+  privacyRoutes(app, ctx);
   importRoutes(app, ctx);
   templateRoutes(app, ctx);
   sendRoutes(app, ctx);

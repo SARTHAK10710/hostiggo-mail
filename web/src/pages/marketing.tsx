@@ -110,7 +110,7 @@ function Composer({ id, onDone }: { id: string; onDone: () => void }) {
             <option value="">Choose a mailbox…</option>
             {mailboxes.data?.map((m) => <option key={m.id} value={m.id}>{m.email}</option>)}
           </select>
-          {mb && <div className="text-[12px] text-ink-2">{num(mb.daily_send_limit - mb.sent_last_24h)} sends left in 24h window</div>}
+          {mb && <div className="text-[12px] text-ink-2">{num(Math.max(0, mb.effective_daily_limit - mb.sent_last_24h))} sends left in 24h window{mb.warming_up ? ' (mailbox is warming up; the limit rises weekly)' : ''}</div>}
         </Tile>
         <Tile n="03" label="Content" icon={<PenLine className="size-4" />} done={!!f.template_id}>
           <select className="input" value={f.template_id} onChange={(e) => set('template_id')(e.target.value)}>

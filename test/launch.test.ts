@@ -26,7 +26,7 @@ describe('Phase 6: security', () => {
   });
 
   it('rate-limits sign-in attempts per IP', async () => {
-    const h = await make({ RATE_LIMIT: 'true' });
+    const h = await make({ RATE_LIMIT: 'true', AUTH_RATE_LIMIT_MAX: '10' });
     const codes: number[] = [];
     for (let i = 0; i < 12; i++) {
       const r = await h.app.inject({ method: 'POST', url: '/v1/auth/login', payload: { email: 'x@example.com', password: 'wrong-password' } });

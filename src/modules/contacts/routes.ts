@@ -4,7 +4,7 @@ import { audit, authorize } from '../../auth/index.js';
 import type { Ctx } from '../../context.js';
 import { one } from '../../db/index.js';
 import { normalizeEmail } from '../../lib/email.js';
-import { conflict, notFound } from '../../lib/errors.js';
+import { AppError, badRequest, conflict, notFound } from '../../lib/errors.js';
 import { IdParams, Pagination, parse } from '../../lib/http.js';
 import { addToLists, softDeleteContact, upsertContact } from './service.js';
 
@@ -78,6 +78,59 @@ export function contactRoutes(app: FastifyInstance, ctx: Ctx) {
     });
     reply.code(result.outcome === 'created' ? 201 : 200);
     return { ...result.contact, outcome: result.outcome, duplicate: result.outcome !== 'created' };
+  });
+
+  /** Dashboard bulk actions: opt in (with a consent source), add to / remove from a list, delete. */
+  app.post('/v1/contacts/bulk', async (req) => {
+    const a = authorize(req, { role: 'member' });
+    const body = parse(
+      z.object({
+        contact_ids: z.array(z.string().uuid()).min(1).max(1000),
+        action: z.enum(['opt_in', 'add_to_list', 'remove_from_list', 'delete']),
+        list_id: z.string().uuid().optional(),
+        consent_source: z.string().min(1).max(200).optional(),
+      }),
+      req.body,
+    );
+    if (body.action === 'opt_in' && !body.consent_source?.trim()) throw badRequest('consent_source_required', 'consent_source is required when marking contacts as opted in');
+    if ((body.action === 'add_to_list' || body.action === 'remove_from_list') && !body.list_id) throw badRequest('list_required', 'list_id is required');
+    return ctx.db.tx(async (tx) => {
+      const found = await tx.query<{ id: string; email: string }>(
+        `select id, email from contacts where workspace_id = $1 and deleted_at is null and id = any($2)`,
+        [a.workspaceId, body.contact_ids],
+      );
+      const now = ctx.clock.now();
+      let processed = 0;
+      let skipped = body.contact_ids.length - found.rows.length;
+      if (body.action === 'remove_from_list') {
+        const r = await tx.query(`delete from list_memberships where workspace_id = $1 and list_id = $2 and contact_id = any($3)`, [a.workspaceId, body.list_id, found.rows.map((c) => c.id)]);
+        processed = r.rowCount;
+        skipped += found.rows.length - processed;
+      } else {
+        for (const c of found.rows) {
+          if (body.action === 'opt_in') {
+            try {
+              const { outcome } = await upsertContact(tx, a.workspaceId, { email: c.email, consent_status: 'opted_in', consent_source: body.consent_source }, { onDuplicate: 'update', now });
+              if (outcome === 'unchanged') skipped += 1;
+              else processed += 1;
+            } catch (err) {
+              // People who unsubscribed stay unsubscribed; everything else is a real error.
+              if (err instanceof AppError && err.code === 'consent_conflict') skipped += 1;
+              else throw err;
+            }
+          } else if (body.action === 'add_to_list') {
+            const added = await addToLists(tx, a.workspaceId, c.id, [body.list_id!], 'dashboard', now);
+            if (added) processed += 1;
+            else skipped += 1;
+          } else {
+            await softDeleteContact(tx, a.workspaceId, c.id);
+            processed += 1;
+          }
+        }
+      }
+      await audit(tx, a, `contact.bulk_${body.action}`, undefined, { requested: body.contact_ids.length, processed, skipped, list_id: body.list_id });
+      return { action: body.action, requested: body.contact_ids.length, processed, skipped };
+    });
   });
 
   app.get('/v1/contacts/:id', async (req) => {

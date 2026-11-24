@@ -5,7 +5,7 @@ import type { Ctx } from '../context.js';
 import { one, type Queryable } from '../db/index.js';
 import { notFound } from '../lib/errors.js';
 import { IdParams, parse } from '../lib/http.js';
-import { hasReplyScope } from './mailboxes/service.js';
+import { effectiveDailyLimit, hasReplyScope, warmupCap } from './mailboxes/service.js';
 import { isPublicUrl } from './sends/service.js';
 
 /**
@@ -150,7 +150,7 @@ export function analyticsRoutes(app: FastifyInstance, ctx: Ctx) {
     const since = new Date(now.getTime() - 30 * 86_400_000);
     const [mailboxes, rates, suppressions, failures] = await Promise.all([
       ctx.db.query<any>(
-        `select m.id, m.email, m.status, m.health, m.scopes, m.last_error, m.daily_send_limit, m.watch_expires_at, m.last_synced_at,
+        `select m.id, m.email, m.status, m.health, m.scopes, m.last_error, m.daily_send_limit, m.warmup_started_at, m.watch_expires_at, m.last_synced_at,
            (select count(*)::int from sends s where s.mailbox_id = m.id and s.accepted_at > $2) as sent_last_24h
          from mailbox_connections m where m.workspace_id = $1 and m.status <> 'disconnected' order by m.created_at`,
         [a.workspaceId, new Date(now.getTime() - 86_400_000)],
@@ -198,13 +198,18 @@ export function analyticsRoutes(app: FastifyInstance, ctx: Ctx) {
             key: 'unsubscribe',
             label: isPublicUrl(ctx.config.API_BASE_URL)
               ? 'One-click unsubscribe needs an https API_BASE_URL (reply-to-unsubscribe is used meanwhile)'
-              : 'Server is not publicly reachable: emails ask people to reply "unsubscribe" (handle these by hand). Host it on a public https URL for one-click unsubscribe.',
+              : 'Server is not publicly reachable: emails ask people to reply "unsubscribe" (replies are processed automatically when reply tracking is on). Host it on a public https URL for one-click unsubscribe.',
             ok: false,
           },
       { key: 'domain_auth', label: 'SPF/DKIM/DMARC for a custom sending domain (needed once an ESP adapter is added)', ok: null },
     ];
     return {
-      mailboxes: live.map(({ scopes, ...m }) => ({ ...m, reply_tracking: hasReplyScope({ scopes }) })),
+      mailboxes: live.map(({ scopes, ...m }) => ({
+        ...m,
+        reply_tracking: hasReplyScope({ scopes }),
+        effective_daily_limit: effectiveDailyLimit(m, now),
+        warming_up: warmupCap(m.warmup_started_at, now) !== null && effectiveDailyLimit(m, now) < m.daily_send_limit,
+      })),
       last_30_days: { ...r, bounce_rate: bounceRate, complaint_rate: complaintRate },
       suppressions: Object.fromEntries(suppressions.rows.map((s: any) => [s.reason, s.n])),
       top_failures: failures.rows,

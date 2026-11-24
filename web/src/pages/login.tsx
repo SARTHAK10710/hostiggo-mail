@@ -40,18 +40,18 @@ export function LoginPage() {
     mutationFn: async () => {
       if (invite.data) {
         const r = await api('/v1/auth/signup', { body: { email: invite.data.email, password, name: name || undefined, invite_token: token } });
-        return { token: r.session.token, ws: r.workspace.id };
+        return r.workspace.id as string;
       }
       if (mode === 'signup') {
         const r = await api('/v1/auth/signup', { body: { email, password, name: name || undefined, workspace_name: workspace } });
-        return { token: r.session.token, ws: r.workspace.id };
+        return r.workspace.id as string;
       }
-      const r = await api('/v1/auth/login', { body: { email, password } });
-      return { token: r.session.token, ws: null };
+      await api('/v1/auth/login', { body: { email, password } });
+      return null;
     },
-    onSuccess: ({ token: t, ws }) => {
+    onSuccess: (ws) => {
       if (inviteToken()) window.history.replaceState({}, '', '/');
-      return signIn(t, ws);
+      return signIn(ws);
     },
   });
 

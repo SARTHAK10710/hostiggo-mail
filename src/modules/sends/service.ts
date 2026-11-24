@@ -8,7 +8,8 @@ import { newMessageId } from '../../lib/mime.js';
 import { isPublicUrl } from '../../lib/url.js';
 import { contactContext, renderMessage } from '../../lib/template.js';
 import { ProviderError, providerFor } from '../../providers/index.js';
-import { nextCapacityAt, type Mailbox } from '../mailboxes/service.js';
+import { sendAlert } from '../../lib/alerts.js';
+import { effectiveDailyLimit, marketingShare, nextCapacityAt, type Mailbox } from '../mailboxes/service.js';
 import { HARD_REASONS, suppressionReasons } from '../suppressions.js';
 import { emitSendWebhook, webhookEventForEmailEvent } from '../webhooks.js';
 
@@ -143,7 +144,12 @@ async function mailboxHealthy(ctx: Ctx, q: Queryable, mailbox: Mailbox): Promise
   if (!r || r.sent < 20) return true;
   const healthy = r.bounced / r.sent <= ctx.config.MAX_BOUNCE_RATE && r.complained / r.sent <= ctx.config.MAX_COMPLAINT_RATE;
   const health = healthy ? 'healthy' : 'unhealthy';
-  if (health !== mailbox.health) await q.query(`update mailbox_connections set health = $2, updated_at = now() where id = $1`, [mailbox.id, health]);
+  if (health !== mailbox.health) {
+    await q.query(`update mailbox_connections set health = $2, updated_at = now() where id = $1`, [mailbox.id, health]);
+    if (!healthy) {
+      sendAlert(ctx, `Marketing sends from ${mailbox.email} are paused: ${r.bounced} bounces and ${r.complained} complaints in ${r.sent} sends over the last 7 days.`);
+    }
+  }
   return healthy;
 }
 
@@ -196,12 +202,12 @@ async function decide(ctx: Ctx, q: Queryable, send: SendRow, mailbox: Mailbox | 
     `select count(*)::int as n from sends where mailbox_id = $1 and id <> $3 and (accepted_at > $2 or status = 'sending')`,
     [mailbox.id, new Date(now.getTime() - 86_400_000), send.id],
   );
-  // Marketing never uses the reserved share, so a campaign can't block a host's booking request.
-  const limit = send.kind === 'marketing'
-    ? Math.floor(mailbox.daily_send_limit * (1 - ctx.config.TRANSACTIONAL_RESERVE_PERCENT / 100))
-    : mailbox.daily_send_limit;
+  // Warm-up sets today's cap; marketing never uses the share kept for booking / transactional mail.
+  const dayLimit = effectiveDailyLimit(mailbox, now);
+  const limit = send.kind === 'marketing' ? marketingShare(ctx, dayLimit) : dayLimit;
   if ((used?.n ?? 0) >= limit) {
-    const what = limit === mailbox.daily_send_limit ? `Mailbox daily limit (${limit})` : `Marketing share of the daily limit (${limit} of ${mailbox.daily_send_limit})`;
+    const warming = dayLimit < mailbox.daily_send_limit ? ', warm-up' : '';
+    const what = limit === dayLimit ? `Mailbox daily limit (${limit}${warming})` : `Marketing share of the daily limit (${limit} of ${dayLimit}${warming})`;
     return { action: 'defer', code: 'rate_limited', message: `${what} reached; will send when capacity frees up`, until: await nextCapacityAt(q, mailbox.id, now) };
   }
   return { action: 'send' };

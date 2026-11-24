@@ -6,6 +6,7 @@ web/dist
 .data-*
 backups
 .env
+.git
+.github
 *.log
 *.csv
-.git

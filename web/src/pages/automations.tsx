@@ -113,12 +113,18 @@ export function AutomationBuilder() {
     onSuccess: () => { setDirty(false); toast('Draft saved'); refresh(); },
     onError: (e) => toast(errText(e), 'error'),
   });
+  const [enrollExisting, setEnrollExisting] = useState(false);
   const publish = useMutation({
     mutationFn: async () => {
       if (dirty) await api(`/v1/automations/${id}`, { method: 'PUT', body: { name, definition: def } });
-      return api(`/v1/automations/${id}/publish`, { method: 'POST' });
+      return api(`/v1/automations/${id}/publish`, { method: 'POST', body: { enroll_existing: enrollExisting && def?.trigger?.type === 'list_joined' } });
     },
-    onSuccess: (r: any) => { setDirty(false); toast(`Published version ${r.version} (${r.status})`); refresh(); },
+    onSuccess: (r: any) => {
+      setDirty(false);
+      setEnrollExisting(false);
+      toast(`Published version ${r.version} (${r.status})${r.enrolled_existing ? `; ${num(r.enrolled_existing)} people already on the list were enrolled` : ''}`);
+      refresh();
+    },
   });
   const action = useMutation({
     mutationFn: (a: 'pause' | 'resume' | 'archive') => api(`/v1/automations/${id}/${a}`, { method: 'POST' }),
@@ -160,6 +166,12 @@ export function AutomationBuilder() {
             {a.status === 'paused' && <Button onClick={() => action.mutate('resume')} loading={action.isPending}><Play className="size-3.5" /> Resume</Button>}
             {a.published && <Button variant="danger" className="sm:ml-auto" onClick={() => confirm('Archive this automation? Every contact exits and queued emails are cancelled. This cannot be undone.') && action.mutate('archive')}><Archive className="size-3.5" /> Archive</Button>}
           </div>
+        )}
+        {editable && a.status !== 'archived' && def.trigger?.type === 'list_joined' && (
+          <label className="flex items-start gap-2 rounded-lg bg-canvas p-3 text-[12px] text-ink-2">
+            <input type="checkbox" className="mt-0.5 size-4 accent-brand" checked={enrollExisting} onChange={(e) => setEnrollExisting(e.target.checked)} />
+            <span>When publishing, <b>also enroll people already on this list.</b> Otherwise only people who join afterwards enter. Contacts who aren't opted in (for marketing) or are suppressed are still skipped.</span>
+          </label>
         )}
         <ErrorBox error={publish.error} />
       </div>

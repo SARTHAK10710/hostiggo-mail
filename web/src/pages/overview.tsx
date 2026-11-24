@@ -97,8 +97,8 @@ export function OverviewPage() {
                   <span className="truncate font-mono text-[12px]">{m.email}</span>
                   <Pill tone={m.status === 'active' ? 'success' : 'danger'} dot>{m.status.replace('_', ' ')}</Pill>
                 </div>
-                <div className="mt-2 flex items-center justify-between text-[11px] text-muted"><span>Sent 24h</span><span className="tnum font-mono">{m.sent_last_24h} / {m.daily_send_limit}</span></div>
-                <Meter value={m.sent_last_24h / m.daily_send_limit} />
+                <div className="mt-2 flex items-center justify-between text-[11px] text-muted"><span>Sent 24h</span><span className="tnum font-mono">{m.sent_last_24h} / {m.effective_daily_limit}{m.warming_up ? ' · warming up' : ''}</span></div>
+                <Meter value={m.sent_last_24h / m.effective_daily_limit} />
               </div>
             ))}
             {deliver.data && (
