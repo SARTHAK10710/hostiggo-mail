@@ -13,7 +13,7 @@
     "gen:key": "node -e \"console.log('k1:'+require('crypto').randomBytes(32).toString('base64'))\"",
     "dev:web": "npm --prefix web run dev",
     "build:api": "tsc -p tsconfig.json && node -e \"require('fs').cpSync('src/db/migrations','dist/db/migrations',{recursive:true})\"",
-    "postinstall": "npm --prefix web install",
+    "postinstall": "cd web && npm install",
     "test:pg": "node scripts/test-postgres.mjs",
     "restore": "node --env-file-if-exists=.env scripts/restore.mjs"
   },
