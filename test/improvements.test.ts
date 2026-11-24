@@ -130,7 +130,8 @@ describe('mailbox warm-up (SPAM-FIX step 3)', () => {
   });
 
   it('defers sends beyond the warm-up cap', async () => {
-    const h = await harness({ WARMUP_DEFAULT: 'true' });
+    // No transactional reserve here so the cap itself is what's measured (the reserve has its own test).
+    const h = await harness({ WARMUP_DEFAULT: 'true', TRANSACTIONAL_RESERVE_PERCENT: '0' });
     const s = await signup(h);
     const mb = await connectMailbox(h, s, 'cap@hostiggo.test');
     const list = (await s.req('POST', '/v1/lists', { name: 'L' })).body.id;

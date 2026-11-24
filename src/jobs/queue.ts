@@ -20,24 +20,27 @@ export interface EnqueueOptions {
   /** Only one *pending* job per key; re-enqueue moves it earlier if needed. */
   uniqueKey?: string;
   maxAttempts?: number;
+  /** Higher runs first among due jobs (transactional sends use 10). */
+  priority?: number;
 }
 
 export async function enqueue(q: Queryable, type: string, payload: object, opts: EnqueueOptions = {}) {
   const runAt = opts.runAt ?? new Date();
   if (opts.uniqueKey) {
     await q.query(
-      `insert into jobs(type, payload, unique_key, run_at, max_attempts)
-       values ($1, $2, $3, $4, $5)
+      `insert into jobs(type, payload, unique_key, run_at, max_attempts, priority)
+       values ($1, $2, $3, $4, $5, $6)
        on conflict (unique_key) where status = 'pending' and unique_key is not null
-       do update set run_at = least(jobs.run_at, excluded.run_at), updated_at = now()`,
-      [type, JSON.stringify(payload), opts.uniqueKey, runAt, opts.maxAttempts ?? 5],
+       do update set run_at = least(jobs.run_at, excluded.run_at), priority = greatest(jobs.priority, excluded.priority), updated_at = now()`,
+      [type, JSON.stringify(payload), opts.uniqueKey, runAt, opts.maxAttempts ?? 5, opts.priority ?? 0],
     );
   } else {
-    await q.query(`insert into jobs(type, payload, run_at, max_attempts) values ($1, $2, $3, $4)`, [
+    await q.query(`insert into jobs(type, payload, run_at, max_attempts, priority) values ($1, $2, $3, $4, $5)`, [
       type,
       JSON.stringify(payload),
       runAt,
       opts.maxAttempts ?? 5,
+      opts.priority ?? 0,
     ]);
   }
 }
@@ -47,7 +50,7 @@ export async function claimJobs(q: Queryable, workerId: string, now: Date, limit
     `update jobs set status = 'running', locked_at = now(), locked_by = $1, attempts = attempts + 1, updated_at = now()
      where id in (
        select id from jobs where status = 'pending' and run_at <= $2
-       order by run_at, id limit $3 for update skip locked)
+       order by priority desc, run_at, id limit $3 for update skip locked)
      returning id, type, payload, unique_key, run_at, attempts, max_attempts`,
     [workerId, now, limit],
   );

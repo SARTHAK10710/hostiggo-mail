@@ -7,7 +7,7 @@ import { enqueue } from '../jobs/queue.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { IdParams, parse } from '../lib/http.js';
 import { contactContext } from '../lib/template.js';
-import { effectiveDailyLimit, sentInLast24h } from './mailboxes/service.js';
+import { effectiveDailyLimit, marketingShare, sentInLast24h } from './mailboxes/service.js';
 import { queueSend } from './sends/service.js';
 import { latestTemplateVersion } from './templates.js';
 
@@ -60,8 +60,13 @@ export async function reviewCampaign(ctx: Ctx, q: Queryable, campaign: any) {
   let capacity = null;
   if (mailbox) {
     const used = await sentInLast24h(q, mailbox.id, ctx.clock.now());
-    const limit = effectiveDailyLimit(mailbox, ctx.clock.now());
-    capacity = { daily_limit: limit, configured_limit: mailbox.daily_send_limit, warming_up: limit < mailbox.daily_send_limit, used_last_24h: used, remaining: Math.max(0, limit - used) };
+    const dayLimit = effectiveDailyLimit(mailbox, ctx.clock.now());
+    // A campaign only gets the marketing share; the rest stays free for booking emails.
+    const limit = marketingShare(ctx, dayLimit);
+    capacity = {
+      daily_limit: limit, configured_limit: mailbox.daily_send_limit, warming_up: dayLimit < mailbox.daily_send_limit,
+      reserved_for_transactional: dayLimit - limit, used_last_24h: used, remaining: Math.max(0, limit - used),
+    };
     if (counts.eligible > capacity.remaining) {
       warnings.push(`Only ${capacity.remaining} sends remain in this mailbox's 24h window; the rest will be spread over the following day(s).`);
     }

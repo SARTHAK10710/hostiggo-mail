@@ -1,7 +1,7 @@
 -- Hostiggo Mail: initial schema.
 -- Every tenant-owned table carries workspace_id; every query must filter by it.
 
--- ───────────────────────── Phase 1: foundation ─────────────────────────
+-- ------------------------- Phase 1: foundation -------------------------
 create table workspaces (
   id          uuid primary key default gen_random_uuid(),
   name        text not null,
@@ -60,7 +60,7 @@ create table audit_logs (
 );
 create index audit_logs_ws_time on audit_logs(workspace_id, created_at desc);
 
--- ───────────────────────── Phase 2: mailboxes ─────────────────────────
+-- ------------------------- Phase 2: mailboxes -------------------------
 create table oauth_states (
   nonce         text primary key,
   workspace_id  uuid not null references workspaces(id) on delete cascade,
@@ -96,7 +96,7 @@ create unique index mailbox_one_live_per_email
   on mailbox_connections(workspace_id, lower(email)) where status <> 'disconnected';
 create index mailbox_email on mailbox_connections(lower(email)) where status <> 'disconnected';
 
--- ───────────────────────── Phase 3: contacts ─────────────────────────
+-- ------------------------- Phase 3: contacts -------------------------
 create table contacts (
   id              uuid primary key default gen_random_uuid(),
   workspace_id    uuid not null references workspaces(id) on delete cascade,
@@ -176,7 +176,7 @@ create table contact_import_rows (
   primary key (import_id, row_number)
 );
 
--- ───────────────────────── Phase 4: templates + automations ─────────────────────────
+-- ------------------------- Phase 4: templates + automations -------------------------
 create table templates (
   id               uuid primary key default gen_random_uuid(),
   workspace_id     uuid not null references workspaces(id) on delete cascade,
@@ -277,7 +277,7 @@ create table campaigns (
   updated_at            timestamptz not null default now()
 );
 
--- ───────────────────────── Sends + events (ledger) ─────────────────────────
+-- ------------------------- Sends + events (ledger) -------------------------
 create table sends (
   id                   uuid primary key default gen_random_uuid(),
   workspace_id         uuid not null references workspaces(id) on delete cascade,
@@ -361,7 +361,7 @@ create table product_events (
   unique (workspace_id, idempotency_key)
 );
 
--- ───────────────────────── Job queue (Postgres-backed, SKIP LOCKED) ─────────────────────────
+-- ------------------------- Job queue (Postgres-backed, SKIP LOCKED) -------------------------
 create table jobs (
   id           bigserial primary key,
   type         text not null,

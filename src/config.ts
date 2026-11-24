@@ -11,8 +11,6 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().default(4000),
   HOST: z.string().default('0.0.0.0'),
   LOG_LEVEL: z.string().default('info'),
-  /** Log one line per request (off by default so real warnings and errors stay visible). */
-  REQUEST_LOGGING: bool,
   /** Optional Slack-compatible incoming webhook that receives operational alerts (mailbox needs reconnect, ...). */
   ALERT_WEBHOOK_URL: z.string().default(''),
 
@@ -59,6 +57,11 @@ const EnvSchema = z.object({
   GMAIL_DEFAULT_DAILY_LIMIT: z.coerce.number().default(400),
   /** Hard ceiling on a single marketing campaign sent through Gmail. */
   GMAIL_MAX_CAMPAIGN_RECIPIENTS: z.coerce.number().default(300),
+  /**
+   * Share of each mailbox's daily limit that marketing may never use, kept free for booking and
+   * other transactional emails (percent).
+   */
+  TRANSACTIONAL_RESERVE_PERCENT: z.coerce.number().min(0).max(100).default(20),
 
   /** Shared secrets for /webhooks/provider/:name, as "name:secret,name2:secret2". */
   PROVIDER_WEBHOOK_SECRETS: z.string().default(''),
@@ -73,6 +76,26 @@ const EnvSchema = z.object({
   /** Pause marketing sends from a mailbox when its 7d bounce rate exceeds this (with >= 20 sends). */
   MAX_BOUNCE_RATE: z.coerce.number().default(0.05),
   MAX_COMPLAINT_RATE: z.coerce.number().default(0.003),
+
+  /** false = only invited people can create accounts (the very first account is always allowed). */
+  ALLOW_SIGNUPS: z
+    .string()
+    .optional()
+    .transform((v) => !(v === 'false' || v === '0')),
+  /** General per-IP limit of 600 requests/min. Sign-in/sign-up are always limited (AUTH_RATE_LIMIT_MAX). */
+  RATE_LIMIT: z
+    .string()
+    .optional()
+    .transform((v) => !(v === 'false' || v === '0')),
+  /** Log every HTTP request (noisy). Errors and warnings are always logged. */
+  LOG_REQUESTS: bool,
+  /** Shown on the public privacy / terms / support pages (needed for Google OAuth verification). */
+  COMPANY_NAME: z.string().default('Hostiggo'),
+  SUPPORT_EMAIL: z.string().default(''),
+  /** Local backups of the embedded database (PGlite only). 0 disables. */
+  BACKUP_EVERY_HOURS: z.coerce.number().default(24),
+  BACKUP_KEEP: z.coerce.number().default(7),
+  BACKUP_DIR: z.string().default('./backups'),
 
   WORKER_POLL_MS: z.coerce.number().default(1000),
   WORKER_CONCURRENCY: z.coerce.number().default(4),
@@ -98,6 +121,8 @@ export function resolveFileSecrets(env: Record<string, string | undefined>): Rec
 
 export function loadConfig(rawEnv: Record<string, string | undefined> = process.env): Config {
   const env = resolveFileSecrets(rawEnv);
+  // REQUEST_LOGGING was the PR #1 name for LOG_REQUESTS; keep accepting it.
+  if (env.LOG_REQUESTS === undefined && env.REQUEST_LOGGING !== undefined) env.LOG_REQUESTS = env.REQUEST_LOGGING;
   const parsed = EnvSchema.parse(env);
   const encryptionKeys = parsed.TOKEN_ENCRYPTION_KEYS.split(',')
     .map((s) => s.trim())

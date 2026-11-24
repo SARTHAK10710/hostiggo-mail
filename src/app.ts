@@ -21,12 +21,16 @@ import { templateRoutes } from './modules/templates.js';
 import { unsubscribeRoutes } from './modules/unsubscribe.js';
 import { workspaceRoutes } from './modules/workspace.routes.js';
 import { serveWebApp, systemRoutes } from './modules/system.js';
+import { legalRoutes } from './modules/legal.js';
+import { opsRoutes } from './modules/ops.js';
+import { webhookRoutes } from './modules/webhooks.js';
+import { backupRoutes } from './modules/backups.js';
 
 export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   const app = Fastify({
     loggerInstance: ctx.log,
-    // One log line per request drowns real warnings; opt in with REQUEST_LOGGING=true.
-    logController: new LogController({ disableRequestLogging: !ctx.config.REQUEST_LOGGING }),
+    // One log line per request drowns real warnings; opt in with LOG_REQUESTS=true.
+    logController: new LogController({ disableRequestLogging: !ctx.config.LOG_REQUESTS }),
     bodyLimit: 2 * 1024 * 1024,
     trustProxy: true,
     // Signed unsubscribe tokens in /u/:token are longer than the 100-char default.
@@ -34,15 +38,18 @@ export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   }) as unknown as FastifyInstance;
 
   const prod = ctx.config.NODE_ENV === 'production';
+  // Security headers. CSP allows our own scripts, Google Fonts, inline styles (React style props,
+  // server-rendered pages) and remote images inside sandboxed email previews.
   await app.register(helmet, {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
         styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-        fontSrc: ["'self'", 'https://fonts.gstatic.com'],
-        imgSrc: ["'self'", 'data:'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+        imgSrc: ["'self'", 'data:', 'https:'],
         connectSrc: ["'self'"],
+        frameSrc: ["'self'"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
         frameAncestors: ["'none'"],
@@ -52,10 +59,17 @@ export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
         upgradeInsecureRequests: prod ? [] : null,
       },
     },
-    strictTransportSecurity: prod,
+    crossOriginEmbedderPolicy: false,
+    hsts: ctx.config.API_BASE_URL.startsWith('https://') ? { maxAge: 15552000 } : false,
   });
+
+  // Credential endpoints always have a strict per-IP limit (AUTH_RATE_LIMIT_MAX, via route config);
+  // RATE_LIMIT=true adds a general 600/min per-IP limit on everything else.
   await app.register(rateLimit, {
-    global: false,
+    global: ctx.config.RATE_LIMIT,
+    max: 600,
+    timeWindow: '1 minute',
+    allowList: (req) => req.url === '/health',
     errorResponseBuilder: (_req, ctxInfo) => new AppError(429, 'rate_limited', `Too many attempts. Try again in ${Math.ceil(ctxInfo.ttl / 1000)}s.`),
   });
 
@@ -117,6 +131,10 @@ export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   providerWebhookRoutes(app, ctx);
   analyticsRoutes(app, ctx);
   systemRoutes(app, ctx);
+  legalRoutes(app, ctx);
+  opsRoutes(app, ctx);
+  webhookRoutes(app, ctx);
+  backupRoutes(app, ctx);
   await serveWebApp(app);
 
   return app;

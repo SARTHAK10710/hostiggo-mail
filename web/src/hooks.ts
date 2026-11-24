@@ -41,6 +41,8 @@ export interface Template {
   subject: string;
   variables: string[];
   updated_at: string;
+  slug?: string | null;
+  sample_variables?: Record<string, unknown>;
 }
 export interface ContactList {
   id: string;

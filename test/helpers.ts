@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import pg from 'pg';
 import { buildApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { createContext, type Ctx } from '../src/context.js';
@@ -27,10 +28,36 @@ export interface Harness {
   close(): Promise<void>;
 }
 
+/**
+ * TEST_DATABASE_URL=postgres://user:pass@host:port/postgres runs the suite against real Postgres:
+ * each harness gets its own throwaway database. Default: in-memory PGlite.
+ */
+async function freshDatabaseUrl(): Promise<{ url: string; drop: () => Promise<void> }> {
+  const admin = process.env.TEST_DATABASE_URL;
+  if (!admin) return { url: 'pglite:memory', drop: async () => {} };
+  const name = `hm_test_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const client = new pg.Client({ connectionString: admin });
+  await client.connect();
+  await client.query(`create database ${name} encoding 'UTF8' template template0`);
+  await client.end();
+  const u = new URL(admin);
+  u.pathname = `/${name}`;
+  return {
+    url: u.toString(),
+    drop: async () => {
+      const c = new pg.Client({ connectionString: admin });
+      await c.connect();
+      await c.query(`drop database if exists ${name} with (force)`);
+      await c.end();
+    },
+  };
+}
+
 export async function harness(env: Record<string, string> = {}): Promise<Harness> {
+  const fresh = await freshDatabaseUrl();
   const config = loadConfig({
     NODE_ENV: 'test',
-    DATABASE_URL: 'pglite:memory',
+    DATABASE_URL: fresh.url,
     EMAIL_PROVIDER_MODE: 'fake',
     GMAIL_REPLY_TRACKING: 'true',
     PUBSUB_VERIFICATION_TOKEN: 'pubsub-test-token',
@@ -38,6 +65,7 @@ export async function harness(env: Record<string, string> = {}): Promise<Harness
     AUTH_RATE_LIMIT_MAX: '1000',
     API_BASE_URL: 'https://api.test',
     APP_BASE_URL: 'http://app.test',
+    RATE_LIMIT: 'false',
     ...env,
   });
   const clock = new TestClock();
@@ -56,6 +84,7 @@ export async function harness(env: Record<string, string> = {}): Promise<Harness
     async close() {
       await app.close();
       await db.close();
+      await fresh.drop();
     },
   };
 }

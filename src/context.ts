@@ -18,6 +18,8 @@ export interface Ctx {
   clock: Clock;
   google: GoogleApi;
   log: Logger;
+  /** Outbound HTTP (webhooks). Tests replace it with a recorder. */
+  fetch: typeof fetch;
 }
 
 export const LOG_REDACT = [
@@ -35,7 +37,7 @@ export const LOG_REDACT = [
 
 export async function createContext(
   config: Config,
-  overrides: Partial<Pick<Ctx, 'clock' | 'google' | 'log' | 'db'>> = {},
+  overrides: Partial<Pick<Ctx, 'clock' | 'google' | 'log' | 'db' | 'fetch'>> = {},
 ): Promise<Ctx> {
   const log =
     overrides.log ??
@@ -49,5 +51,6 @@ export async function createContext(
     clock: overrides.clock ?? systemClock,
     google: overrides.google ?? createGoogleApi(config),
     log,
+    fetch: overrides.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args)),
   };
 }

@@ -45,6 +45,11 @@ export function effectiveDailyLimit(m: { daily_send_limit: number; warmup_starte
   return cap === null ? m.daily_send_limit : Math.min(m.daily_send_limit, cap);
 }
 
+/** The part of a daily limit marketing may use; the rest is kept for booking / transactional mail. */
+export function marketingShare(ctx: Pick<Ctx, 'config'>, dailyLimit: number): number {
+  return Math.floor(dailyLimit * (1 - ctx.config.TRANSACTIONAL_RESERVE_PERCENT / 100));
+}
+
 /** Adds today's allowed volume (lower than the configured limit while warming up) to a mailbox row. */
 export function withLimits<T extends { daily_send_limit: number; warmup_started_at?: Date | string | null }>(m: T, now: Date) {
   const effective = effectiveDailyLimit(m, now);

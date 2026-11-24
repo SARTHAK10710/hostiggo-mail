@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Copy, KeyRound, Plus, Receipt, RefreshCw, Send, Zap } from 'lucide-react';
+import { AlertTriangle, BedDouble, CheckCircle2, Copy, KeyRound, Plus, Receipt, RefreshCw, Search, Send, Zap } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { api } from '../api';
@@ -12,7 +12,8 @@ import { SendDrawer } from './shared';
 export function TransactionalPage() {
   const [params, setParams] = useSearchParams();
   const openId = params.get('send');
-  const [tab, setTab] = useState<'log' | 'templates' | 'problems'>('log');
+  const [tab, setTab] = useState<'log' | 'templates' | 'problems' | 'booking'>(() => (params.get('tab') === 'booking' ? 'booking' : 'log'));
+  const [tag, setTag] = useState('');
   const [sendOpen, setSendOpen] = useState(false);
   const statsQ = useQuery({ queryKey: ['overview', '1'], queryFn: () => api('/v1/analytics/overview?days=1'), refetchInterval: 20_000 });
   const rows: { kind: string; status: string; n: number }[] = statsQ.data?.by_kind ?? [];
@@ -20,8 +21,8 @@ export function TransactionalPage() {
   const total = tx.reduce((s, r) => s + r.n, 0);
   const by = (st: string) => tx.filter((r) => r.status === st).reduce((s, r) => s + r.n, 0);
 
-  const logParams = tab === 'problems' ? 'kind=transactional,test&status=failed' : 'kind=transactional,test';
-  const log = useQuery({ queryKey: ['sends', 'tx', tab], enabled: tab !== 'templates', queryFn: async () => (await api(`/v1/sends?limit=50&${logParams}`)).data as any[], refetchInterval: 10_000 });
+  const logParams = (tab === 'problems' ? 'kind=transactional,test&status=failed' : 'kind=transactional,test') + (tag.trim() ? `&tag=${encodeURIComponent(tag.trim())}` : '');
+  const log = useQuery({ queryKey: ['sends', 'tx', tab, tag.trim()], enabled: tab === 'log' || tab === 'problems', queryFn: async () => (await api(`/v1/sends?limit=50&${logParams}`)).data as any[], refetchInterval: 10_000 });
   const unknown = useQuery({ queryKey: ['sends', 'unknown'], queryFn: async () => (await api('/v1/sends?limit=50&status=unknown')).data as any[] });
   const templates = useTemplates('transactional');
 
@@ -34,7 +35,7 @@ export function TransactionalPage() {
         actions={<Button variant="primary" className="bg-rose-600 hover:bg-rose-700" onClick={() => setSendOpen(true)}><Send className="size-3.5" /> Send a message</Button>}
       />
 
-      <ApiPanel templateId={templates.data?.[0]?.id} />
+      <ApiPanel template={templates.data?.find((t) => t.slug === 'booking_request_host') ?? templates.data?.[0]} />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat label="24h transactional volume" icon={<Zap className="size-4" />} accent="text-rose-500" value={num(total)} sub="Requests via API, automations and this console" />
@@ -49,19 +50,30 @@ export function TransactionalPage() {
             { value: 'log', label: <span className="flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-rose-500" />Dispatch log</span> },
             { value: 'templates', label: `Templates (${templates.data?.length ?? 0})` },
             { value: 'problems', label: 'Failed' },
+            { value: 'booking', label: <span className="flex items-center gap-1.5"><BedDouble className="size-3.5" />Booking emails</span> },
           ]} />
-          <Button size="sm" variant="ghost" onClick={() => log.refetch()}><RefreshCw className={cx('size-3.5', log.isFetching && 'animate-spin')} /> Refresh</Button>
+          {(tab === 'log' || tab === 'problems') && (
+            <div className="flex items-center gap-2">
+              <label className="relative">
+                <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted" />
+                <input className="input h-8 w-56 pl-8 font-mono text-[12px]" placeholder="Filter by tag, e.g. booking:HG-1042" value={tag} onChange={(e) => setTag(e.target.value)} />
+              </label>
+              <Button size="sm" variant="ghost" onClick={() => log.refetch()}><RefreshCw className={cx('size-3.5', log.isFetching && 'animate-spin')} /> Refresh</Button>
+            </div>
+          )}
         </div>
-        {tab === 'templates' ? (
+        {tab === 'booking' ? (
+          <BookingPack />
+        ) : tab === 'templates' ? (
           templates.data?.length ? (
             <div className="overflow-x-auto">
               <table className="w-full min-w-[640px]">
-                <thead><tr><th className="th">Template</th><th className="th">ID (for the API)</th><th className="th">Subject</th><th className="th">Variables</th><th className="th text-right">Updated</th></tr></thead>
+                <thead><tr><th className="th">Template</th><th className="th">API name</th><th className="th">Subject</th><th className="th">Variables</th><th className="th text-right">Updated</th></tr></thead>
                 <tbody>
                   {templates.data.map((t) => (
                     <tr key={t.id} className="row-hover">
                       <td className="td font-medium"><Link to={`/templates?id=${t.id}`} className="hover:text-brand">{t.name}</Link> <span className="font-mono text-[11px] text-muted">v{t.current_version}</span></td>
-                      <td className="td font-mono text-[11px]">{t.id}</td>
+                      <td className="td font-mono text-[11px]">{t.slug ?? <span className="text-muted" title="No API name: send with template_id">{t.id}</span>}</td>
                       <td className="td max-w-72 truncate">{t.subject}</td>
                       <td className="td font-mono text-[11px] text-muted">{t.variables.join(', ') || '—'}</td>
                       <td className="td text-right font-mono text-[11px] text-muted">{timeAgo(t.updated_at)}</td>
@@ -84,7 +96,7 @@ export function TransactionalPage() {
   );
 }
 
-function ApiPanel({ templateId }: { templateId?: string }) {
+function ApiPanel({ template }: { template?: { id: string; slug?: string | null } }) {
   const { workspace } = useAuth();
   const sys = useSystem();
   const qc = useQueryClient();
@@ -100,8 +112,8 @@ function ApiPanel({ templateId }: { templateId?: string }) {
   });
   const base = sys.data?.api_base_url ?? window.location.origin;
   const key = newKey ?? 'hm_live_YOUR_KEY';
-  const body = templateId
-    ? `{"to":"guest@example.com","template_id":"${templateId}","variables":{"booking_id":"HG-1042"}}`
+  const body = template
+    ? `{"to":"host@example.com",${template.slug ? `"template":"${template.slug}"` : `"template_id":"${template.id}"`},"variables":{"guest":{"name":"Priya Sharma"}},"tags":["booking:HG-1042"]}`
     : `{"to":"guest@example.com","subject":"Booking confirmed","text_body":"Thanks for booking with Hostiggo!"}`;
   const code = useMemo(() => {
     if (lang === 'curl') return `curl -X POST ${base}/v1/messages/send \\\n  -H "Authorization: Bearer ${key}" \\\n  -H "Idempotency-Key: order-1042" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`;
@@ -168,6 +180,11 @@ function SendMessageModal({ open, onClose, onSent }: { open: boolean; onClose: (
   const toast = useToast();
   const [f, setF] = useState({ to: '', mailbox_id: '', template_id: '', subject: '', text_body: '', variables: '{}' });
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
+  const pickTemplate = (id: string) => {
+    const t = templates.data?.find((x) => x.id === id);
+    const sample = t?.sample_variables && Object.keys(t.sample_variables).length ? JSON.stringify(t.sample_variables, null, 2) : '{}';
+    setF({ ...f, template_id: id, variables: sample });
+  };
   const send = useMutation({
     mutationFn: () => {
       let variables: Record<string, unknown> = {};
@@ -193,14 +210,14 @@ function SendMessageModal({ open, onClose, onSent }: { open: boolean; onClose: (
           </Field>
         </div>
         <Field label="Template">
-          <select className="input" value={f.template_id} onChange={set('template_id')}>
+          <select className="input" value={f.template_id} onChange={(e) => pickTemplate(e.target.value)}>
             <option value="">No template (write it below)</option>
             {templates.data?.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
         </Field>
         {f.template_id ? (
           <Field label="Variables (JSON)" hint={`Template uses: ${templates.data?.find((t) => t.id === f.template_id)?.variables.join(', ') || 'none'}`}>
-            <textarea className="input font-mono text-[12px]" rows={3} value={f.variables} onChange={set('variables')} />
+            <textarea className="input font-mono text-[12px]" rows={f.variables.length > 40 ? 10 : 3} value={f.variables} onChange={set('variables')} />
           </Field>
         ) : (
           <>
@@ -211,5 +228,70 @@ function SendMessageModal({ open, onClose, onSent }: { open: boolean; onClose: (
         <ErrorBox error={send.error} />
       </div>
     </Modal>
+  );
+}
+
+const FLOW: { step: string; who: string; sends: string }[] = [
+  { step: 'Guest books', who: 'Website', sends: 'booking_request_host + booking_received_guest now; booking_reminder_host with send_at = booked + 90 min' },
+  { step: 'Host accepts', who: 'Website', sends: 'Cancel tag booking:<id>, then booking_confirmed_guest + booking_confirmed_host' },
+  { step: 'Host rejects', who: 'Website', sends: 'Cancel tag booking:<id>, start the refund, then booking_declined_guest' },
+  { step: '2 hours, no answer', who: 'Website expiry job', sends: 'Cancel tag booking:<id>, start the refund, then booking_expired_guest + booking_expired_host' },
+];
+
+/** The booking email starter pack: install it, see which templates exist, and the order the website sends them in. */
+function BookingPack() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const pack = useQuery({ queryKey: ['starter', 'booking'], queryFn: async () => (await api('/v1/templates/starter/booking')).data as any[] });
+  const install = useMutation({
+    mutationFn: () => api('/v1/templates/starter/booking', { method: 'POST' }),
+    onSuccess: (r: any) => {
+      toast(r.created.length ? `Added ${r.created.length} booking templates` : 'All booking templates are already installed');
+      qc.invalidateQueries({ queryKey: ['starter', 'booking'] });
+      qc.invalidateQueries({ queryKey: ['templates'] });
+    },
+    onError: (e) => toast(errText(e), 'error'),
+  });
+  const missing = (pack.data ?? []).filter((t) => !t.template_id).length;
+  return (
+    <div className="space-y-5 px-5 pb-5">
+      <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg bg-canvas p-4">
+        <div className="max-w-2xl text-[13px] text-ink-2">
+          <div className="text-[14px] font-semibold text-ink">Host has 2 hours to accept</div>
+          The website owns the booking status and calls the send API at each change. Tag every email <span className="font-mono">booking:&lt;id&gt;</span> so the
+          reminder can be cancelled and the whole history found in the log. The guide <span className="font-mono">BOOKING-EMAILS.md</span> has the website code.
+        </div>
+        <Button variant="primary" loading={install.isPending} disabled={pack.isLoading || missing === 0} onClick={() => install.mutate()}>
+          <Plus className="size-3.5" /> {missing === 0 && pack.data ? 'All installed' : `Add booking templates${missing && missing < (pack.data?.length ?? 0) ? ` (${missing} missing)` : ''}`}
+        </Button>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px]">
+          <thead><tr><th className="th">When</th><th className="th">Who calls</th><th className="th">What it sends</th></tr></thead>
+          <tbody>
+            {FLOW.map((f) => (
+              <tr key={f.step}><td className="td font-medium whitespace-nowrap">{f.step}</td><td className="td text-muted whitespace-nowrap">{f.who}</td><td className="td font-mono text-[11px]">{f.sends}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px]">
+          <thead><tr><th className="th">Template</th><th className="th">API name</th><th className="th">Sent</th><th className="th text-right">Status</th></tr></thead>
+          <tbody>
+            {(pack.data ?? []).map((t) => (
+              <tr key={t.slug} className="row-hover">
+                <td className="td font-medium">{t.template_id ? <Link to={`/templates?id=${t.template_id}`} className="hover:text-brand">{t.name}</Link> : t.name}</td>
+                <td className="td font-mono text-[11px]">{t.slug}</td>
+                <td className="td max-w-96 text-[12px] text-muted">{t.when}</td>
+                <td className="td text-right">{t.template_id ? <Pill tone="success" dot>Installed</Pill> : <Pill tone="neutral">Not installed</Pill>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }

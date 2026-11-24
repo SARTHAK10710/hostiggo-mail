@@ -5,11 +5,13 @@ import { signToken } from '../../lib/crypto.js';
 import { isValidEmail, normalizeEmail } from '../../lib/email.js';
 import { badRequest, conflict, notFound } from '../../lib/errors.js';
 import { newMessageId } from '../../lib/mime.js';
+import { isPublicUrl } from '../../lib/url.js';
 import { contactContext, renderMessage } from '../../lib/template.js';
 import { ProviderError, providerFor } from '../../providers/index.js';
 import { sendAlert } from '../../lib/alerts.js';
-import { effectiveDailyLimit, nextCapacityAt, type Mailbox } from '../mailboxes/service.js';
+import { effectiveDailyLimit, marketingShare, nextCapacityAt, type Mailbox } from '../mailboxes/service.js';
 import { HARD_REASONS, suppressionReasons } from '../suppressions.js';
+import { emitSendWebhook, webhookEventForEmailEvent } from '../webhooks.js';
 
 export interface SendRow {
   id: string;
@@ -30,7 +32,12 @@ export interface SendRow {
   status: string;
   attempts: number;
   max_attempts: number;
+  tags: string[];
+  metadata: Record<string, unknown>;
 }
+
+/** Transactional mail (booking requests, receipts) is claimed before marketing. */
+export const sendPriority = (kind: SendRow['kind']) => (kind === 'marketing' ? 0 : 10);
 
 export interface QueueSendInput {
   workspaceId: string;
@@ -48,6 +55,10 @@ export interface QueueSendInput {
   /** Unique per workspace. Re-queuing with the same key returns the original send (no duplicate). */
   idempotencyKey: string;
   runAt?: Date;
+  /** e.g. ['booking:HG-1042']; used to find or cancel related sends. */
+  tags?: string[];
+  /** Echoed back in webhooks. */
+  metadata?: Record<string, unknown>;
 }
 
 export async function recordEvent(
@@ -59,6 +70,10 @@ export async function recordEvent(
      values ($1, $2, $3, $4, $5, $6, coalesce($7, now()), $8) on conflict do nothing`,
     [e.workspaceId, e.sendId, e.contactId ?? null, e.type, e.source, e.providerEventId ?? null, e.occurredAt ?? null, JSON.stringify(e.metadata ?? {})],
   );
+  if (r.rowCount > 0 && e.sendId) {
+    const event = webhookEventForEmailEvent(e.type);
+    if (event) await emitSendWebhook(q, e.workspaceId, e.sendId, event);
+  }
   return r.rowCount > 0;
 }
 
@@ -73,19 +88,20 @@ export async function queueSend(ctx: Ctx, q: Queryable, input: QueueSendInput): 
   const inserted = await one<SendRow>(
     q,
     `insert into sends(workspace_id, idempotency_key, kind, source_type, source_id, enrollment_id, step_key, mailbox_id, contact_id,
-       to_email, template_version_id, content, variables, subject, next_attempt_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       to_email, template_version_id, content, variables, subject, next_attempt_at, requested_at, tags, metadata)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
      on conflict (workspace_id, idempotency_key) do nothing returning *`,
     [input.workspaceId, input.idempotencyKey, input.kind, input.sourceType, input.sourceId ?? null, input.enrollmentId ?? null, input.stepKey ?? null,
       input.mailboxId, input.contactId ?? null, to, input.templateVersionId ?? null, input.content ? JSON.stringify(input.content) : null,
-      JSON.stringify(input.variables ?? {}), input.content?.subject ?? null, input.runAt ?? null],
+      JSON.stringify(input.variables ?? {}), input.content?.subject ?? null, input.runAt ?? null, ctx.clock.now(),
+      input.tags ?? [], JSON.stringify(input.metadata ?? {})],
   );
   if (!inserted) {
     const existing = await one<SendRow>(q, `select * from sends where workspace_id = $1 and idempotency_key = $2`, [input.workspaceId, input.idempotencyKey]);
     return { ...existing!, duplicate: true };
   }
   await recordEvent(q, { workspaceId: input.workspaceId, sendId: inserted.id, contactId: input.contactId, type: 'requested', source: 'system' });
-  await enqueue(q, 'send.process', { sendId: inserted.id }, { runAt: input.runAt ?? ctx.clock.now(), uniqueKey: `send:${inserted.id}`, maxAttempts: 3 });
+  await enqueue(q, 'send.process', { sendId: inserted.id }, { runAt: input.runAt ?? ctx.clock.now(), uniqueKey: `send:${inserted.id}`, maxAttempts: 3, priority: sendPriority(input.kind) });
   return { ...inserted, duplicate: false };
 }
 
@@ -94,18 +110,7 @@ export function unsubscribeUrl(ctx: Ctx, workspaceId: string, email: string, sen
   return `${ctx.config.API_BASE_URL}/u/${token}`;
 }
 
-/** True when recipients on the internet could open links on this host (not localhost / private LAN). */
-export function isPublicUrl(raw: string): boolean {
-  try {
-    const h = new URL(raw).hostname.replace(/^\[|\]$/g, '');
-    return !(
-      h === 'localhost' || h.endsWith('.localhost') || h === '0.0.0.0' || h === '::1' ||
-      /^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h)
-    );
-  } catch {
-    return false;
-  }
-}
+export { isPublicUrl } from '../../lib/url.js';
 
 /**
  * Unsubscribe targets for a marketing send. A mailto: target always works; the web page is only
@@ -197,10 +202,13 @@ async function decide(ctx: Ctx, q: Queryable, send: SendRow, mailbox: Mailbox | 
     `select count(*)::int as n from sends where mailbox_id = $1 and id <> $3 and (accepted_at > $2 or status = 'sending')`,
     [mailbox.id, new Date(now.getTime() - 86_400_000), send.id],
   );
-  const limit = effectiveDailyLimit(mailbox, now);
+  // Warm-up sets today's cap; marketing never uses the share kept for booking / transactional mail.
+  const dayLimit = effectiveDailyLimit(mailbox, now);
+  const limit = send.kind === 'marketing' ? marketingShare(ctx, dayLimit) : dayLimit;
   if ((used?.n ?? 0) >= limit) {
-    const warming = limit < mailbox.daily_send_limit;
-    return { action: 'defer', code: 'rate_limited', message: `Mailbox daily limit (${limit}${warming ? ', warm-up' : ''}) reached; will send when capacity frees up`, until: await nextCapacityAt(q, mailbox.id, now) };
+    const warming = dayLimit < mailbox.daily_send_limit ? ', warm-up' : '';
+    const what = limit === dayLimit ? `Mailbox daily limit (${limit}${warming})` : `Marketing share of the daily limit (${limit} of ${dayLimit}${warming})`;
+    return { action: 'defer', code: 'rate_limited', message: `${what} reached; will send when capacity frees up`, until: await nextCapacityAt(q, mailbox.id, now) };
   }
   return { action: 'send' };
 }
@@ -225,7 +233,7 @@ export async function processSend(ctx: Ctx, sendId: string): Promise<void> {
     }
     if (d.action === 'defer') {
       await tx.query(`update sends set error_code = $2, last_error = $3, next_attempt_at = $4 where id = $1`, [send.id, d.code, d.message, d.until]);
-      await enqueue(tx, 'send.process', { sendId: send.id }, { runAt: d.until, uniqueKey: `send:${send.id}`, maxAttempts: 3 });
+      await enqueue(tx, 'send.process', { sendId: send.id }, { runAt: d.until, uniqueKey: `send:${send.id}`, maxAttempts: 3, priority: sendPriority(send.kind) });
       return null;
     }
     await tx.query(`update sends set status = 'sending', sending_at = now(), attempts = attempts + 1, error_code = null, last_error = null where id = $1`, [send.id]);
@@ -283,13 +291,16 @@ export async function processSend(ctx: Ctx, sendId: string): Promise<void> {
       const at = new Date(ctx.clock.now().getTime() + delay);
       await ctx.db.tx(async (tx) => {
         await tx.query(`update sends set status = 'queued', error_code = $2, last_error = $3, next_attempt_at = $4 where id = $1`, [send.id, pe.code, pe.message, at]);
-        await enqueue(tx, 'send.process', { sendId: send.id }, { runAt: at, uniqueKey: `send:${send.id}`, maxAttempts: 3 });
+        await enqueue(tx, 'send.process', { sendId: send.id }, { runAt: at, uniqueKey: `send:${send.id}`, maxAttempts: 3, priority: sendPriority(send.kind) });
       });
       return;
     }
     if (pe.kind === 'ambiguous') {
       // Never auto-retry when we can't tell whether Gmail accepted it: that's how duplicates happen.
-      await ctx.db.query(`update sends set status = 'unknown', error_code = $2, last_error = $3, finished_at = now() where id = $1`, [send.id, pe.code, pe.message]);
+      await ctx.db.tx(async (tx) => {
+        await tx.query(`update sends set status = 'unknown', error_code = $2, last_error = $3, finished_at = now() where id = $1`, [send.id, pe.code, pe.message]);
+        await emitSendWebhook(tx, send.workspace_id, send.id, 'send.unknown');
+      });
       return;
     }
     await finishFailed(ctx, send, pe.code, pe.message);
@@ -312,7 +323,7 @@ export async function retrySend(ctx: Ctx, q: Queryable, workspaceId: string, sen
     [sendId, workspaceId],
   );
   if (!s) throw conflict('not_retryable', 'Only failed or unknown sends can be retried');
-  await enqueue(q, 'send.process', { sendId }, { runAt: ctx.clock.now(), uniqueKey: `send:${sendId}`, maxAttempts: 3 });
+  await enqueue(q, 'send.process', { sendId }, { runAt: ctx.clock.now(), uniqueKey: `send:${sendId}`, maxAttempts: 3, priority: sendPriority(s.kind) });
   return s;
 }
 
