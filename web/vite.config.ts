@@ -8,6 +8,6 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
-    proxy: { '/v1': api, '/oauth': api, '/u/': api, '/webhooks': api, '/health': api },
+    proxy: { '/v1': api, '/oauth': api, '/u/': api, '/webhooks': api, '/health': api, '/privacy': api, '/terms': api, '/support': api },
   },
 });

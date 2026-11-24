@@ -72,12 +72,12 @@ export async function queueSend(ctx: Ctx, q: Queryable, input: QueueSendInput): 
   const inserted = await one<SendRow>(
     q,
     `insert into sends(workspace_id, idempotency_key, kind, source_type, source_id, enrollment_id, step_key, mailbox_id, contact_id,
-       to_email, template_version_id, content, variables, subject, next_attempt_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       to_email, template_version_id, content, variables, subject, next_attempt_at, requested_at)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
      on conflict (workspace_id, idempotency_key) do nothing returning *`,
     [input.workspaceId, input.idempotencyKey, input.kind, input.sourceType, input.sourceId ?? null, input.enrollmentId ?? null, input.stepKey ?? null,
       input.mailboxId, input.contactId ?? null, to, input.templateVersionId ?? null, input.content ? JSON.stringify(input.content) : null,
-      JSON.stringify(input.variables ?? {}), input.content?.subject ?? null, input.runAt ?? null],
+      JSON.stringify(input.variables ?? {}), input.content?.subject ?? null, input.runAt ?? null, ctx.clock.now()],
   );
   if (!inserted) {
     const existing = await one<SendRow>(q, `select * from sends where workspace_id = $1 and idempotency_key = $2`, [input.workspaceId, input.idempotencyKey]);

@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import { ArrowRight, CheckCircle2, CircleAlert, Inbox, MailCheck, MessagesSquare, RefreshCw, Send, ShieldCheck, Users, Workflow } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Circle, CircleAlert, X, Inbox, MailCheck, MessagesSquare, RefreshCw, Send, ShieldCheck, Users, Workflow } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../api';
-import { useSystem } from '../hooks';
+import { useActiveMailboxes, useSystem, useTemplates } from '../hooks';
 import { Button, Card, CardHeader, Empty, KindPill, Meter, PageHeader, Pill, SendStatus, Spinner, Stat, Tabs, cx, num, pct, timeAgo } from '../ui';
 import { ReplyRateNote } from './shared';
 
@@ -45,6 +45,8 @@ export function OverviewPage() {
           </Button>
         </div>
       </div>
+
+      <GettingStarted />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <Stat label="Emails requested" icon={<Send className="size-4" />} value={num(requested)} sub={`Last ${days} days · excludes test sends`} />
@@ -248,5 +250,66 @@ export function SendTable({ rows, loading, onInspect }: { rows?: any[]; loading?
         </tbody>
       </table>
     </div>
+  );
+}
+
+
+const DISMISS_KEY = 'hm.getting-started.dismissed';
+
+/** First-run checklist. Each step is ticked from real data; hidden once complete or dismissed. */
+function GettingStarted() {
+  const [dismissed, setDismissed] = useState(() => {
+    try { return localStorage.getItem(DISMISS_KEY) === '1'; } catch { return false; }
+  });
+  const mailboxes = useActiveMailboxes();
+  const templates = useTemplates();
+  const contacts = useQuery({ queryKey: ['contact-counts'], queryFn: async () => {
+    const [all, opted] = await Promise.all([api('/v1/contacts?limit=1'), api('/v1/contacts?limit=1&consent_status=opted_in')]);
+    return { total: all.total as number, optedIn: opted.total as number };
+  } });
+  const accepted = useQuery({ queryKey: ['sends', 'any-accepted'], queryFn: async () => (await api('/v1/sends?limit=1&status=accepted')).data.length > 0 });
+  const autos = useQuery({ queryKey: ['automations'], queryFn: async () => (await api('/v1/automations')).data as any[] });
+  const campaigns = useQuery({ queryKey: ['campaigns'], queryFn: async () => (await api('/v1/campaigns')).data as any[] });
+  if (dismissed || [mailboxes, templates, contacts, accepted, autos, campaigns].some((q) => q.isLoading)) return null;
+
+  const steps = [
+    { done: (mailboxes.data?.length ?? 0) > 0, title: 'Connect a Gmail mailbox', to: '/deliverability', cta: 'Connect' },
+    { done: !!accepted.data, title: 'Send a test email', to: '/transactional', cta: 'Use "Send Test Email" in the top bar' },
+    { done: (contacts.data?.total ?? 0) > 0, title: 'Add or import contacts', to: '/contacts', cta: 'Add contacts' },
+    { done: (contacts.data?.optedIn ?? 0) > 0, title: 'Record marketing consent for at least one contact', to: '/contacts', cta: 'Open a contact' },
+    { done: (templates.data?.length ?? 0) > 0, title: 'Create a template', to: '/templates?new=marketing', cta: 'New template' },
+    {
+      done: (autos.data ?? []).some((a) => a.published_version) || (campaigns.data ?? []).some((c) => c.status === 'sent'),
+      title: 'Publish an automation or send a campaign', to: '/automations', cta: 'Build a sequence',
+    },
+  ];
+  const doneCount = steps.filter((x) => x.done).length;
+  if (doneCount === steps.length) return null;
+  const dismiss = () => {
+    try { localStorage.setItem(DISMISS_KEY, '1'); } catch { /* ignore */ }
+    setDismissed(true);
+  };
+  return (
+    <Card className="p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-[15px] font-semibold">Getting started · {doneCount} of {steps.length} done</h2>
+          <p className="text-[12px] text-muted">Each step ticks itself off as you go.</p>
+        </div>
+        <button className="rounded p-1 text-muted hover:bg-slate-100" onClick={dismiss} aria-label="Hide checklist"><X className="size-4" /></button>
+      </div>
+      <div className="mt-2"><Meter value={doneCount / steps.length} tone="bg-emerald-600" /></div>
+      <ol className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {steps.map((st) => (
+          <li key={st.title} className={cx('flex items-start gap-2 rounded-lg p-3', st.done ? 'bg-emerald-50' : 'bg-canvas')}>
+            {st.done ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" /> : <Circle className="mt-0.5 size-4 shrink-0 text-slate-400" />}
+            <div className="min-w-0">
+              <div className={cx('text-[13px] font-medium', st.done && 'text-emerald-800 line-through decoration-emerald-300')}>{st.title}</div>
+              {!st.done && <Link to={st.to} className="text-[12px] font-medium text-brand">{st.cta} →</Link>}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </Card>
   );
 }

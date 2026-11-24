@@ -68,7 +68,7 @@ export async function serveWebApp(app: FastifyInstance) {
   // wildcard: files are looked up per request, so a rebuilt dashboard is served without a restart.
   await app.register(fastifyStatic, { root: dist, wildcard: true });
   app.setNotFoundHandler((req, reply) => {
-    const isApi = /^\/(v1|oauth|webhooks|u|health)(\/|$)/.test(req.url);
+    const isApi = /^\/(v1|oauth|webhooks|u|health|privacy|terms|support)(\/|$)/.test(req.url);
     if (req.method === 'GET' && !isApi) return reply.sendFile('index.html');
     return reply.code(404).send({ error: { code: 'not_found', message: 'Route not found' } });
   });

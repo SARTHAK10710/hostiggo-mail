@@ -1,4 +1,6 @@
 import cors from '@fastify/cors';
+import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { resolvePrincipal } from './auth/index.js';
 import type { Ctx } from './context.js';
@@ -18,15 +20,47 @@ import { templateRoutes } from './modules/templates.js';
 import { unsubscribeRoutes } from './modules/unsubscribe.js';
 import { workspaceRoutes } from './modules/workspace.routes.js';
 import { serveWebApp, systemRoutes } from './modules/system.js';
+import { legalRoutes } from './modules/legal.js';
+import { opsRoutes } from './modules/ops.js';
+import { backupRoutes } from './modules/backups.js';
 
 export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   const app = Fastify({
     loggerInstance: ctx.log,
     bodyLimit: 2 * 1024 * 1024,
     trustProxy: true,
+    disableRequestLogging: !ctx.config.LOG_REQUESTS,
     // Signed unsubscribe tokens in /u/:token are longer than the 100-char default.
     routerOptions: { maxParamLength: 2048 },
   }) as unknown as FastifyInstance;
+
+  // Security headers. CSP allows our own scripts, Google Fonts, inline styles (React style props,
+  // server-rendered pages) and remote images inside sandboxed email previews.
+  await app.register(helmet, {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+        imgSrc: ["'self'", 'data:', 'https:'],
+        connectSrc: ["'self'"],
+        frameSrc: ["'self'"],
+        frameAncestors: ["'none'"],
+        formAction: ["'self'"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        upgradeInsecureRequests: null, // keep plain-http localhost working
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+    hsts: ctx.config.API_BASE_URL.startsWith('https://') ? { maxAge: 15552000 } : false,
+  });
+
+  // Per-IP limits; auth routes opt into much stricter limits via route config.
+  if (ctx.config.RATE_LIMIT) {
+    await app.register(rateLimit, { global: true, max: 600, timeWindow: '1 minute', allowList: (req) => req.url === '/health' });
+  }
 
   await app.register(cors, {
     origin: ctx.config.corsOrigins,
@@ -85,6 +119,9 @@ export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   providerWebhookRoutes(app, ctx);
   analyticsRoutes(app, ctx);
   systemRoutes(app, ctx);
+  legalRoutes(app, ctx);
+  opsRoutes(app, ctx);
+  backupRoutes(app, ctx);
   await serveWebApp(app);
 
   return app;

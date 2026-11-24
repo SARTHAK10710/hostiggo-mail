@@ -62,6 +62,26 @@ const EnvSchema = z.object({
   MAX_BOUNCE_RATE: z.coerce.number().default(0.05),
   MAX_COMPLAINT_RATE: z.coerce.number().default(0.003),
 
+  /** false = only invited people can create accounts (the very first account is always allowed). */
+  ALLOW_SIGNUPS: z
+    .string()
+    .optional()
+    .transform((v) => !(v === 'false' || v === '0')),
+  /** Per-IP request limits (auth endpoints are much stricter). */
+  RATE_LIMIT: z
+    .string()
+    .optional()
+    .transform((v) => !(v === 'false' || v === '0')),
+  /** Log every HTTP request (noisy). Errors and warnings are always logged. */
+  LOG_REQUESTS: bool,
+  /** Shown on the public privacy / terms / support pages (needed for Google OAuth verification). */
+  COMPANY_NAME: z.string().default('Hostiggo'),
+  SUPPORT_EMAIL: z.string().default(''),
+  /** Local backups of the embedded database (PGlite only). 0 disables. */
+  BACKUP_EVERY_HOURS: z.coerce.number().default(24),
+  BACKUP_KEEP: z.coerce.number().default(7),
+  BACKUP_DIR: z.string().default('./backups'),
+
   WORKER_POLL_MS: z.coerce.number().default(1000),
   WORKER_CONCURRENCY: z.coerce.number().default(4),
 });

@@ -8,3 +8,4 @@ dist
 # Real people's data, never commit
 opt-in-contacts.csv
 *.contacts.csv
+backups

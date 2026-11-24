@@ -15,6 +15,8 @@ export interface Db extends Queryable {
   exec(sql: string): Promise<void>;
   close(): Promise<void>;
   readonly kind: 'pg' | 'pglite';
+  /** PGlite only: consistent snapshot of the whole data directory (gzip tarball). */
+  dump?(): Promise<Blob>;
 }
 
 export interface Tx extends Queryable {
@@ -99,6 +101,9 @@ async function createPglite(url: string): Promise<Db> {
   await db.waitReady;
   return {
     kind: 'pglite',
+    async dump() {
+      return (await db.dumpDataDir('gzip')) as Blob;
+    },
     async query(sql, params) {
       const r = await db.query(sql, params as any[]);
       return { rows: r.rows as any[], rowCount: r.affectedRows ?? r.rows.length };

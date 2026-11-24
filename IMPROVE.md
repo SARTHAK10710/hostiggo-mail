@@ -11,13 +11,13 @@ Legend: 🔴 do before real users · 🟠 important soon · 🟢 nice to have
 
 | # | Improvement | Why |
 |---|---|---|
-| 1.1 | **Move from PGlite to real Postgres** (Supabase, which the Hostiggo site already uses). Set `DATABASE_URL=postgres://…`, run the API and `npm run start:worker` as separate processes. | PGlite is an embedded, single-process database meant for local dev. A hard kill (closing the terminal, a crash) can corrupt it. This already happened once during testing. |
+| 1.1 | ✅ *Code verified on Postgres 18 (`npm run test:pg`); deploy steps in DEPLOY.md.* **Move from PGlite to real Postgres** (Supabase, which the Hostiggo site already uses). Set `DATABASE_URL=postgres://…`, run the API and `npm run start:worker` as separate processes. | PGlite is an embedded, single-process database meant for local dev. A hard kill (closing the terminal, a crash) can corrupt it. This already happened once during testing. |
 | 1.2 | **Deploy on a public HTTPS address** (Render, Railway, Fly.io, or a VPS behind Caddy/Nginx) and set `API_BASE_URL` / `APP_BASE_URL` to it. Add the new redirect URI in Google Cloud. | Needed for one-click unsubscribe (Gmail requires https), Gmail push notifications (Pub/Sub can't reach localhost), and access from other machines. |
 | 1.3 | **Rotate the Google OAuth client secret.** Create a new secret in Google Cloud → Clients, delete the old one, and paste the new one straight into `.env`. | The current secret was shared in a chat transcript. |
 | 1.4 | **Switch to Google Workspace on your own domain** with SPF, DKIM and DMARC. See [SPAM-FIX.md](SPAM-FIX.md). | Biggest single improvement to inbox placement; also raises the daily limit to ~2,000 and removes the weekly re-consent in Testing mode (use an *Internal* OAuth app). |
 | 1.5 | **Turn the visible unsubscribe line back on** (`UNSUBSCRIBE_FOOTER=true`) once the app is on public HTTPS. | Marketing email without an easy opt-out produces spam reports (which hurt deliverability more than unsubscribes) and breaks CAN-SPAM/GDPR/CASL expectations. |
 | 1.6 | **Load secrets from a secret manager / KMS** in production (`APP_SECRET`, `TOKEN_ENCRYPTION_KEYS`, Google client secret). After re-connecting all mailboxes, remove the `dev:` entry from `TOKEN_ENCRYPTION_KEYS`. | Encryption keys in a plain `.env` on a server are the weakest link for stored Gmail tokens. |
-| 1.7 | **Backups** of the database (Supabase does daily backups on paid plans) and a tested restore. | Contacts, consent records and suppressions are business-critical. |
+| 1.7 | ✅ *Embedded DB: automatic snapshots + restore. Postgres: provider backups (DEPLOY.md).* **Backups** of the database (Supabase does daily backups on paid plans) and a tested restore. | Contacts, consent records and suppressions are business-critical. |
 
 ## 2. Deliverability & compliance (🟠)
 
@@ -39,7 +39,7 @@ Legend: 🔴 do before real users · 🟠 important soon · 🟢 nice to have
 | 3.1 🟠 | **Enroll existing list members** when an automation is published (optional checkbox), not only people who join afterwards. | Today, contacts already in the trigger list are skipped. This surprised us during testing. |
 | 3.2 🟠 | **Bulk actions on Contacts**: select many → opt in (with source), add to list, remove, delete. | Opting in 5 people meant 5 separate clicks. |
 | 3.3 🟠 | **Edit contact form** (names, custom fields) in the contact panel. | Only consent can be changed in the UI right now. |
-| 3.4 🟠 | **Member invites by email** + **password reset**; or reuse the Hostiggo website's Supabase auth (single sign-on). | Teammates currently must sign up first; there is no "forgot password". |
+| 3.4 🟠 | ✅ *Invite links done (sharing by email still manual).* **Member invites by email** + **password reset**; or reuse the Hostiggo website's Supabase auth (single sign-on). | Teammates currently must sign up first; there is no "forgot password". |
 | 3.5 🟢 | **Automation branches**: "if replied → stop", condition splits, business-hour windows, recipient time zones. | Deferred by the guide until the linear engine proved reliable, which it now has (tests cover it). |
 | 3.6 🟢 | **Migrate enrollments to a new version** on publish (optional). | Today contacts finish the version they started, which is safe but sometimes not what you want. |
 | 3.7 🟢 | **Segments** (saved filters: city, consent date, custom fields, engagement). | Lists are manual. |
@@ -53,14 +53,19 @@ Legend: 🔴 do before real users · 🟠 important soon · 🟢 nice to have
 |---|---|---|
 | 4.1 🟠 | **CI on GitHub Actions**: `npm ci`, `npm run typecheck`, `npm test`, `npm run build` on every push/PR. | Keeps the 41-test suite green as the code changes. |
 | 4.2 🟠 | **Browser end-to-end tests** (Playwright) for login, connect mailbox, import CSV, build automation, launch campaign. | The UI was verified by hand; regressions would go unnoticed. |
-| 4.3 🟠 | **Security hardening**: rate-limit `/v1/auth/*`, security headers / CSP (`@fastify/helmet`), session token in an httpOnly cookie instead of `localStorage`. | Protects against brute force and XSS token theft. |
-| 4.4 🟠 | **Quieter, shippable logs**: `LOG_LEVEL=warn` locally or disable per-request logging; send structured logs + errors to a service (Better Stack, Sentry). | The terminal is flooded with request logs; real errors are hard to spot. |
-| 4.5 🟢 | **Alerts**: email/Slack when a mailbox needs reconnecting, becomes unhealthy, or sends fail repeatedly. | Today you only find out by opening the dashboard. |
+| 4.3 🟠 | ✅ *Headers/CSP + rate limits done; cookie sessions still open.* **Security hardening**: rate-limit `/v1/auth/*`, security headers / CSP (`@fastify/helmet`), session token in an httpOnly cookie instead of `localStorage`. | Protects against brute force and XSS token theft. |
+| 4.4 🟠 | ✅ *Request logs off by default (`LOG_REQUESTS`).* **Quieter, shippable logs**: `LOG_LEVEL=warn` locally or disable per-request logging; send structured logs + errors to a service (Better Stack, Sentry). | The terminal is flooded with request logs; real errors are hard to spot. |
+| 4.5 🟢 | *Partly: Operations page + `/health/ready` for uptime monitors.* **Alerts**: email/Slack when a mailbox needs reconnecting, becomes unhealthy, or sends fail repeatedly. | Today you only find out by opening the dashboard. |
 | 4.6 🟢 | **OpenAPI spec** generated from the zod schemas + published API docs. | Easier integration for the Hostiggo backend team. |
 | 4.7 🟢 | **Data-subject tools**: export and hard-delete everything about one email address (GDPR). | Soft-delete keeps the address for suppression; a full erase flow is still needed. |
 | 4.8 🟢 | **Split the dashboard bundle** (route-level code splitting). | Single 465 KB JS bundle today; fine locally, slower on mobile. |
 
 ---
+
+## Added in Phase 6 work
+| # | Improvement | Why |
+|---|---|---|
+| 6.1 🟠 | **Export the embedded database to Postgres** (needs upgrading PGlite to the version `@electric-sql/pglite-tools` supports). | Moves existing local data to the hosted database without re-entering it. |
 
 ## Known limitations today
 

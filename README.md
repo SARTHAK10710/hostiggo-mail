@@ -16,6 +16,7 @@ cp .env.example .env        # defaults work for local dev
 npm run build               # builds dashboard + API
 npm start                   # everything on http://localhost:4000
 npm test                    # end-to-end tests (embedded Postgres + fake Google)
+npm run test:pg             # same suite on a real, throwaway PostgreSQL 18
 ```
 
 Open http://localhost:4000, create an account, then **Deliverability → Connect Gmail account**.
@@ -46,6 +47,18 @@ to reconnect weekly until the app is verified/published.
 
 - [SPAM-FIX.md](SPAM-FIX.md): why test emails land in Spam and how to fix it, from quick steps to Google Workspace with SPF/DKIM/DMARC.
 - [IMPROVE.md](IMPROVE.md): prioritised list of improvements (production database, public HTTPS, ESP adapter, bulk actions, CI…).
+- [DEPLOY.md](DEPLOY.md): putting it on a public HTTPS address with real Postgres (Supabase/Render or docker compose).
+- [GOOGLE-VERIFICATION.md](GOOGLE-VERIFICATION.md): what Google needs before anyone outside your test users can connect.
+
+## Phase 6: launch readiness (built)
+
+- **Real Postgres verified**: `npm run test:pg` runs the whole suite on a throwaway PostgreSQL 18.
+- **Security**: security headers/CSP, per-IP rate limits (sign-in 10/min), invite-only sign-up (`ALLOW_SIGNUPS=false`) with 7-day single-use invitation links.
+- **Public pages**: `/privacy` (with Google's Limited Use disclosure), `/terms`, `/support`, linked from the sign-in page.
+- **Operations** (Settings → Operations): worker heartbeat, failed/unknown/stuck sends with plain-language reasons and retry, mailbox issues; for the server operator also the job queue, failed jobs and backups. `/health/ready` for uptime monitors.
+- **Backups** of the embedded database: automatic daily snapshot, keep 7, "Back up now", `npm run restore -- <file>`.
+- **Onboarding**: Getting started checklist on the Overview.
+- **Deploy**: `Dockerfile`, `docker-compose.yml` (Postgres + API + worker).
 
 ## Dashboard (web/)
 

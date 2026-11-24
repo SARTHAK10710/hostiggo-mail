@@ -7,6 +7,7 @@ import { isAdmin, useAuth } from '../auth';
 import { useSystem } from '../hooks';
 import { Button, Card, CardHeader, Empty, ErrorBox, Field, Modal, PageHeader, Pill, Spinner, cx, dateTime, errText, timeAgo, useToast } from '../ui';
 import { MailboxCards, SetupBanner } from './deliverability';
+import { OperationsSection } from './operations';
 
 const OAUTH_ERRORS: Record<string, string> = {
   access_denied: 'Google access was not granted.',
@@ -20,7 +21,7 @@ export function SettingsPage() {
   const { section = 'mailboxes' } = useParams();
   const sys = useSystem();
   const tabs = [
-    ['mailboxes', 'Mailboxes'], ['gmail', 'Gmail setup'], ['api', 'API keys & webhooks'], ['members', 'Members'], ['audit', 'Audit log'],
+    ['mailboxes', 'Mailboxes'], ['gmail', 'Gmail setup'], ['api', 'API keys & webhooks'], ['members', 'Members'], ['ops', 'Operations'], ['audit', 'Audit log'],
     ...(sys.data && !sys.data.delivers_real_email ? [['outbox', 'Dev outbox']] : []),
   ];
   return (
@@ -37,6 +38,7 @@ export function SettingsPage() {
       {section === 'members' && <Members />}
       {section === 'audit' && <Audit />}
       {section === 'outbox' && <Outbox />}
+      {section === 'ops' && <OperationsSection />}
     </>
   );
 }
@@ -189,10 +191,17 @@ function Members() {
   const toast = useToast();
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('member');
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const q = useQuery({ queryKey: ['members'], queryFn: async () => (await api('/v1/members')).data as any[] });
   const add = useMutation({
     mutationFn: () => api('/v1/members', { body: { email, role } }),
-    onSuccess: () => { setEmail(''); toast('Member added'); qc.invalidateQueries({ queryKey: ['members'] }); },
+    onSuccess: (r: any) => {
+      setEmail('');
+      if (r.invited) { setInviteUrl(r.invite_url); toast(`${r.email} has no account yet: share the invitation link`); }
+      else toast('Member added');
+      qc.invalidateQueries({ queryKey: ['members'] });
+      qc.invalidateQueries({ queryKey: ['invites'] });
+    },
     onError: (e) => toast(errText(e), 'error'),
   });
   const change = useMutation({
@@ -206,7 +215,7 @@ function Members() {
       <CardHeader title={`Members of ${workspace?.name}`} subtitle="Viewers read; members build and send; admins manage mailboxes, keys and people." />
       {admin && (
         <form className="flex flex-wrap gap-2 px-5 pb-4" onSubmit={(e) => { e.preventDefault(); add.mutate(); }}>
-          <input className="input max-w-xs" type="email" required placeholder="teammate@hostiggo.com (must have signed up)" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input className="input max-w-xs" type="email" required placeholder="teammate@hostiggo.com" value={email} onChange={(e) => setEmail(e.target.value)} />
           <select className="input w-36" value={role} onChange={(e) => setRole(e.target.value)}><option value="viewer">Viewer</option><option value="member">Member</option><option value="admin">Admin</option></select>
           <Button type="submit" variant="primary" loading={add.isPending}>Add member</Button>
         </form>
@@ -226,8 +235,40 @@ function Members() {
           ))}</tbody>
         </table>
       )}
+      {admin && <Invites inviteUrl={inviteUrl} />}
       <NewWorkspace />
     </Card>
+  );
+}
+
+function Invites({ inviteUrl }: { inviteUrl: string | null }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const q = useQuery({ queryKey: ['invites'], queryFn: async () => (await api('/v1/invites')).data as any[] });
+  const revoke = useMutation({
+    mutationFn: (id: string) => api(`/v1/invites/${id}`, { method: 'DELETE' }),
+    onSuccess: () => { toast('Invitation revoked'); qc.invalidateQueries({ queryKey: ['invites'] }); },
+    onError: (e) => toast(errText(e), 'error'),
+  });
+  return (
+    <div className="space-y-2 border-t border-line px-5 py-4">
+      {inviteUrl && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+          <div className="caps mb-1 text-emerald-700">Invitation link: send it to them (valid 7 days, works once)</div>
+          <div className="flex gap-2"><code className="flex-1 truncate rounded bg-white px-2 py-1.5 font-mono text-[12px]">{inviteUrl}</code>
+            <Button size="sm" onClick={() => { navigator.clipboard.writeText(inviteUrl); toast('Link copied'); }}><Copy className="size-3.5" /> Copy</Button></div>
+          <p className="mt-1 text-[11px] text-emerald-800">The link only works for that email address. Links can't be shown again; invite again to get a new one.</p>
+        </div>
+      )}
+      <div className="caps">Pending invitations</div>
+      {q.data?.length ? q.data.map((i) => (
+        <div key={i.id} className="flex items-center justify-between rounded-md bg-canvas px-3 py-2 text-[12px]">
+          <span>{i.email} <Pill className="ml-1">{i.role}</Pill></span>
+          <span className="flex items-center gap-2 text-muted">expires {dateTime(i.expires_at)}
+            <button className="rounded p-1 text-rose-500 hover:bg-rose-50" title="Revoke" onClick={() => revoke.mutate(i.id)}><Trash2 className="size-4" /></button></span>
+        </div>
+      )) : <div className="text-[12px] text-muted">None. Adding someone who has no account creates an invitation link.</div>}
+    </div>
   );
 }
 

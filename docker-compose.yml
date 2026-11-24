@@ -1,0 +1,46 @@
+# Self-hosted production stack: Postgres + API/dashboard + background worker.
+# 1. cp .env.example .env and fill it in (see DEPLOY.md). DATABASE_URL is set below.
+# 2. docker compose up -d --build
+# Put Caddy/Nginx (or your host's HTTPS) in front of port 4000.
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hostiggo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your shell or .env}
+      POSTGRES_DB: hostiggo_mail
+      POSTGRES_INITDB_ARGS: --encoding=UTF8
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hostiggo -d hostiggo_mail"]
+      interval: 10s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://hostiggo:${POSTGRES_PASSWORD}@db:5432/hostiggo_mail
+      RUN_WORKER_IN_PROCESS: "false"
+    ports:
+      - "4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["node", "dist/worker.js"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://hostiggo:${POSTGRES_PASSWORD}@db:5432/hostiggo_mail
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
