@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, CircleAlert, Copy, KeyRound, Plus, Trash2 } from 'lucide-react';
+import { CheckCircle2, CircleAlert, Copy, KeyRound, Plus, Send, Trash2, Webhook } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { NavLink, useNavigate, useParams, useSearchParams } from 'react-router';
 import { api } from '../api';
@@ -146,6 +146,8 @@ function ApiSection() {
         <div className="space-y-3 px-5 pb-5 text-[12px]">
           {[
             ['POST', '/v1/messages/send', 'Transactional send (messages:send)'],
+            ['POST', '/v1/messages/batch', 'Up to 50 sends in one all-or-nothing call (messages:send)'],
+            ['POST', '/v1/sends/cancel', 'Cancel queued or scheduled sends by tag (messages:send)'],
             ['POST', '/v1/events', 'Product events → automation triggers (events:write)'],
             ['POST', '/v1/contacts', 'Create/update contacts (contacts:write)'],
             ['POST', '/webhooks/google/pubsub', 'Gmail push notifications (Google signs these)'],
@@ -155,8 +157,128 @@ function ApiSection() {
           ))}
         </div>
       </Card>
+      <WebhooksCard />
       {creating && <NewKeyModal onClose={() => setCreating(false)} onCreated={setShown} />}
     </div>
+  );
+}
+
+const EVENT_HELP: Record<string, string> = {
+  'send.failed': 'Gmail rejected it or the mailbox needs reconnecting',
+  'send.suppressed': 'Blocked: the address bounced or complained before',
+  'send.bounced': 'Accepted, then bounced back',
+  'send.unknown': 'Network error mid-send; outcome unclear',
+  'send.accepted': 'Handed to Gmail',
+  'send.complained': 'Marked as spam',
+  'send.replied': 'The recipient replied',
+};
+
+/** Outbound webhooks: tell the website when a booking email can't reach someone. */
+function WebhooksCard() {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [adding, setAdding] = useState(false);
+  const [secret, setSecret] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const list = useQuery({ queryKey: ['webhooks'], queryFn: () => api('/v1/webhooks') as Promise<any> });
+  const remove = useMutation({
+    mutationFn: (id: string) => api(`/v1/webhooks/${id}`, { method: 'DELETE' }),
+    onSuccess: () => { toast('Webhook removed'); qc.invalidateQueries({ queryKey: ['webhooks'] }); },
+    onError: (e) => toast(errText(e), 'error'),
+  });
+  const ping = useMutation({
+    mutationFn: (id: string) => api(`/v1/webhooks/${id}/test`, { method: 'POST' }),
+    onSuccess: (_r, id) => { toast('Test event queued'); setOpenId(id); setTimeout(() => qc.invalidateQueries({ queryKey: ['webhook-deliveries', id] }), 2500); },
+    onError: (e) => toast(errText(e), 'error'),
+  });
+  const rows: any[] = list.data?.data ?? [];
+  return (
+    <Card className="xl:col-span-2">
+      <CardHeader title="Webhooks" subtitle="We POST a signed event to your server when a transactional email fails, so the website can fall back (SMS, call the host)." icon={<Webhook className="size-4" />}
+        right={<Button variant="primary" size="sm" onClick={() => setAdding(true)}><Plus className="size-3.5" /> Add endpoint</Button>} />
+      {secret && (
+        <div className="mx-5 mb-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+          <div className="caps mb-1 text-emerald-700">Signing secret: copy it now. It won't be shown again.</div>
+          <div className="flex gap-2"><code className="flex-1 truncate rounded bg-white px-2 py-1.5 font-mono text-[12px]">{secret}</code><Button size="sm" onClick={() => { navigator.clipboard.writeText(secret); toast('Copied'); }}><Copy className="size-3.5" /> Copy</Button></div>
+          <p className="mt-2 text-[12px] text-emerald-800">Verify each request: HMAC-SHA256 of <span className="font-mono">"&lt;t&gt;.&lt;raw body&gt;"</span> with this secret must equal <span className="font-mono">v1</span> in the <span className="font-mono">Hostiggo-Signature</span> header.</p>
+        </div>
+      )}
+      {list.isLoading ? <Spinner /> : rows.length ? (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[700px]">
+            <thead><tr><th className="th">URL</th><th className="th">Events</th><th className="th">Last 7 days</th><th className="th text-right"></th></tr></thead>
+            <tbody>{rows.map((w) => (
+              <tr key={w.id} className="row-hover align-top">
+                <td className="td"><div className="font-mono text-[12px] break-all">{w.url}</div>{w.description && <div className="text-[11px] text-muted">{w.description}</div>}
+                  {openId === w.id && <Deliveries id={w.id} />}</td>
+                <td className="td">{w.events.map((e: string) => <Pill key={e} tone="neutral" className="mr-1 mb-1 normal-case">{e}</Pill>)}</td>
+                <td className="td text-[12px] whitespace-nowrap">
+                  <span className="text-emerald-700">{w.delivered_7d} delivered</span>
+                  {w.failed_7d > 0 && <span className="text-rose-600"> · {w.failed_7d} failed</span>}
+                  {w.pending > 0 && <span className="text-orange-600"> · {w.pending} retrying</span>}
+                  <div><button className="text-[11px] text-brand hover:underline" onClick={() => setOpenId(openId === w.id ? null : w.id)}>{openId === w.id ? 'Hide' : 'Show'} recent deliveries</button></div>
+                </td>
+                <td className="td text-right whitespace-nowrap">
+                  <Button size="sm" loading={ping.isPending && ping.variables === w.id} onClick={() => ping.mutate(w.id)}><Send className="size-3.5" /> Send test</Button>
+                  <button className="ml-1 rounded p-1 text-rose-500 hover:bg-rose-50" title="Remove" onClick={() => confirm(`Stop sending events to ${w.url}?`) && remove.mutate(w.id)}><Trash2 className="size-4" /></button>
+                </td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      ) : <Empty icon={<Webhook className="size-6" />} title="No webhooks">Add your website's endpoint to hear about failed or bounced booking emails within seconds.</Empty>}
+      {adding && <NewWebhookModal events={list.data?.events ?? []} defaults={list.data?.default_events ?? []} onClose={() => setAdding(false)} onCreated={setSecret} />}
+    </Card>
+  );
+}
+
+function Deliveries({ id }: { id: string }) {
+  const q = useQuery({ queryKey: ['webhook-deliveries', id], queryFn: async () => (await api(`/v1/webhooks/${id}/deliveries`)).data as any[], refetchInterval: 5000 });
+  if (q.isLoading) return <Spinner />;
+  if (!q.data?.length) return <div className="mt-2 text-[11px] text-muted">No deliveries yet.</div>;
+  return (
+    <div className="mt-2 space-y-1">
+      {q.data.slice(0, 10).map((d) => (
+        <div key={d.id} className="flex items-center gap-2 text-[11px]">
+          <Pill tone={d.status === 'delivered' ? 'success' : d.status === 'failed' ? 'danger' : 'alert'} className="normal-case">{d.status}</Pill>
+          <span className="font-mono">{d.event}</span>
+          <span className="text-muted">{timeAgo(d.created_at)} · {d.attempts} attempt{d.attempts === 1 ? '' : 's'}{d.response_status ? ` · HTTP ${d.response_status}` : ''}</span>
+          {d.last_error && d.status !== 'delivered' && <span className="truncate text-rose-600" title={d.last_error}>{d.last_error}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function NewWebhookModal({ events, defaults, onClose, onCreated }: { events: string[]; defaults: string[]; onClose: () => void; onCreated: (secret: string) => void }) {
+  const qc = useQueryClient();
+  const [url, setUrl] = useState('');
+  const [description, setDescription] = useState('');
+  const [picked, setPicked] = useState<string[]>(defaults);
+  const create = useMutation({
+    mutationFn: () => api('/v1/webhooks', { body: { url, description: description || undefined, events: picked } }),
+    onSuccess: (r: any) => { qc.invalidateQueries({ queryKey: ['webhooks'] }); onCreated(r.secret); onClose(); },
+  });
+  return (
+    <Modal open onClose={onClose} title="Add a webhook endpoint" subtitle="Transactional sends only. Failed deliveries are retried for about an hour."
+      footer={<><Button onClick={onClose}>Cancel</Button><Button variant="primary" loading={create.isPending} disabled={!url || picked.length === 0} onClick={() => create.mutate()}>Add endpoint</Button></>}>
+      <div className="space-y-3">
+        <Field label="Endpoint URL" hint="Must be https in production."><input className="input font-mono text-[12px]" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://hostiggo.com/api/mail-events" /></Field>
+        <Field label="Description (optional)"><input className="input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Website booking fallback" /></Field>
+        <div>
+          <div className="caps mb-1.5">Events</div>
+          <div className="space-y-1.5">
+            {events.map((e) => (
+              <label key={e} className="flex items-start gap-2 text-[13px]">
+                <input type="checkbox" className="mt-1" checked={picked.includes(e)} onChange={(ev) => setPicked(ev.target.checked ? [...picked, e] : picked.filter((x) => x !== e))} />
+                <span><span className="font-mono text-[12px]">{e}</span> <span className="text-muted">{EVENT_HELP[e] ?? ''}</span></span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <ErrorBox error={create.error} />
+      </div>
+    </Modal>
   );
 }
 

@@ -8,7 +8,7 @@ import { useActiveMailboxes, useTemplates } from '../hooks';
 import { Button, Card, CardHeader, Empty, ErrorBox, Field, KindPill, Modal, PageHeader, Spinner, Tabs, cx, errText, timeAgo, useToast } from '../ui';
 
 const VARS = ['contact.first_name', 'contact.last_name', 'contact.full_name', 'contact.email'];
-const BLANK = { name: '', kind: 'marketing', subject: '', html_body: '', text_body: '', from_name: '', reply_to: '' };
+const BLANK = { name: '', slug: '', kind: 'marketing', subject: '', html_body: '', text_body: '', from_name: '', reply_to: '' };
 
 export function TemplatesPage() {
   const [params, setParams] = useSearchParams();
@@ -55,12 +55,12 @@ function Editor({ id, initialKind, onSaved }: { id: string | null; initialKind: 
   const { workspace } = useAuth();
   useEffect(() => {
     const c = q.data?.current;
-    if (c) setF({ name: q.data.name, kind: q.data.kind, subject: c.subject, html_body: c.html_body ?? '', text_body: c.text_body ?? '', from_name: c.from_name ?? '', reply_to: c.reply_to ?? '' });
+    if (c) setF({ name: q.data.name, slug: q.data.slug ?? '', kind: q.data.kind, subject: c.subject, html_body: c.html_body ?? '', text_body: c.text_body ?? '', from_name: c.from_name ?? '', reply_to: c.reply_to ?? '' });
   }, [q.data]);
 
   const save = useMutation({
     mutationFn: () => {
-      const body = { name: f.name, subject: f.subject, html_body: f.html_body || null, text_body: f.text_body || null, from_name: f.from_name || null, reply_to: f.reply_to || null };
+      const body = { name: f.name, slug: f.slug.trim() || null, subject: f.subject, html_body: f.html_body || null, text_body: f.text_body || null, from_name: f.from_name || null, reply_to: f.reply_to || null };
       return id ? api(`/v1/templates/${id}`, { method: 'PUT', body }) : api('/v1/templates', { body: { ...body, kind: f.kind } });
     },
     onSuccess: (r: any) => {
@@ -88,8 +88,11 @@ function Editor({ id, initialKind, onSaved }: { id: string | null; initialKind: 
         <CardHeader title={id ? f.name || 'Template' : 'New template'} subtitle={id ? `Version ${q.data?.current_version} · ${q.data?.versions.length} versions` : 'Saved as version 1'}
           right={<KindPill kind={f.kind} />} />
         <div className="space-y-3 px-5 pb-5">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <Field label="Name"><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></Field>
+            <Field label="API name (optional)" hint="Your code sends with template: this name.">
+              <input className="input font-mono text-[12px]" value={f.slug} placeholder="booking_confirmed_guest" onChange={(e) => setF({ ...f, slug: e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '_') })} />
+            </Field>
             <Field label="Type" hint="Marketing mail gets an unsubscribe link and needs opted-in contacts.">
               <select className="input" value={f.kind} disabled={!!id} onChange={(e) => setF({ ...f, kind: e.target.value })}>
                 <option value="transactional">Transactional</option>

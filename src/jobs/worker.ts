@@ -7,6 +7,7 @@ import { dispatchCampaign } from '../modules/campaigns.js';
 import { commitImportJob } from '../modules/contacts/imports.js';
 import { reconcileMailboxes, renewWatches, syncMailbox } from '../modules/replies.js';
 import { markStaleSends, processSend } from '../modules/sends/service.js';
+import { deliverWebhook } from '../modules/webhooks.js';
 import { claimJobs, completeJob, enqueue, failJob, recoverStaleJobs, type JobRow } from './queue.js';
 
 type Handler = (ctx: Ctx, payload: any) => Promise<void>;
@@ -21,6 +22,7 @@ export const handlers: Record<string, Handler> = {
   'mailbox.renew_watches': (ctx) => renewWatches(ctx),
   'maintenance.tick': (ctx) => maintenance(ctx),
   'maintenance.backup': (ctx) => scheduledBackup(ctx),
+  'webhook.deliver': (ctx, p) => deliverWebhook(ctx, p.deliveryId),
 };
 
 /** Recurring tasks, enqueued with a pending-unique key so many workers don't duplicate them. */
@@ -52,6 +54,7 @@ async function maintenance(ctx: Ctx) {
   await ctx.db.query(`delete from oauth_states where expires_at < $1`, [now]);
   await ctx.db.query(`delete from sessions where expires_at < $1`, [now]);
   await ctx.db.query(`delete from worker_heartbeats where last_seen < $1`, [new Date(now.getTime() - 86_400_000)]);
+  await ctx.db.query(`delete from webhook_deliveries where status <> 'pending' and created_at < $1`, [new Date(now.getTime() - 30 * 86_400_000)]);
 }
 
 export interface Worker {

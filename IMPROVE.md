@@ -67,6 +67,14 @@ Legend: 🔴 do before real users · 🟠 important soon · 🟢 nice to have
 |---|---|---|
 | 6.1 🟠 | **Export the embedded database to Postgres** (needs upgrading PGlite to the version `@electric-sql/pglite-tools` supports). | Moves existing local data to the hosted database without re-entering it. |
 
+## Booking emails (follow-ups)
+| # | Improvement | Why |
+|---|---|---|
+| 7.1 🟠 | **Wire the website** (hostiggo.com) to the API as described in [BOOKING-EMAILS.md](BOOKING-EMAILS.md): batch send on booking, cancel + confirm on accept/reject, expiry job, confirmation page for Accept/Reject links, webhook receiver. | The email side is built; the website still has to call it. |
+| 7.2 🟠 | **SMS / WhatsApp fallback** for the host request when the `send.failed`/`send.bounced` webhook fires. | With a 2-hour window, an email that doesn't arrive costs the booking. |
+| 7.3 🟢 | **Per-workspace default mailbox for transactional mail** (instead of passing `mailbox_id`). | Keeps booking mail on `bookings@` without each caller knowing the id. |
+| 7.4 🟢 | **Date/currency filters in templates** (`{{ stay.check_in \| date: "EEE d MMM" }}`). | Today the website must pre-format every value in the recipient's time zone. |
+
 ## Known limitations today
 
 - Gmail reports **accepted**, not delivered or opened. "Accepted" ≠ inbox.

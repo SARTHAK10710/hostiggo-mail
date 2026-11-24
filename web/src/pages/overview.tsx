@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import { api } from '../api';
 import { useActiveMailboxes, useSystem, useTemplates } from '../hooks';
-import { Button, Card, CardHeader, Empty, KindPill, Meter, PageHeader, Pill, SendStatus, Spinner, Stat, Tabs, cx, num, pct, timeAgo } from '../ui';
+import { Button, Card, CardHeader, Empty, KindPill, Meter, PageHeader, Pill, SendStatus, Spinner, Stat, Tabs, cx, dateTime, num, pct, timeAgo } from '../ui';
 import { ReplyRateNote } from './shared';
 
 type Range = '7' | '30' | '90';
@@ -240,10 +240,13 @@ export function SendTable({ rows, loading, onInspect }: { rows?: any[]; loading?
           {rows.map((s) => (
             <tr key={s.id} className={cx('row-hover', onInspect && 'cursor-pointer')} onClick={() => onInspect?.(s.id)}>
               <td className="td font-mono text-[12px]">{s.to_email}</td>
-              <td className="td max-w-80 truncate">{s.subject ?? <span className="text-muted">(rendered at send time)</span>}</td>
+              <td className="td max-w-80">
+                <div className="truncate">{s.subject ?? <span className="text-muted">(rendered at send time)</span>}</div>
+                {s.tags?.length > 0 && <div className="mt-0.5 flex flex-wrap gap-1">{s.tags.map((t: string) => <span key={t} className="rounded bg-slate-100 px-1.5 py-px font-mono text-[10px] text-ink-2">{t}</span>)}</div>}
+              </td>
               <td className="td"><KindPill kind={s.source_type === 'automation' && s.kind !== 'test' ? 'automation' : s.kind} /></td>
               <td className="td"><SendStatus status={s.status} replied={s.replied} bounced={s.bounced} /></td>
-              <td className="td max-w-64 truncate font-mono text-[11px] text-muted" title={s.last_error ?? ''}>{s.error_code ?? (s.status === 'accepted' ? `gmail:${s.provider_message_id?.slice(0, 10) ?? ''}` : '')}</td>
+              <td className="td max-w-64 truncate font-mono text-[11px] text-muted" title={s.last_error ?? ''}>{s.status === 'queued' && !s.error_code && s.next_attempt_at && new Date(s.next_attempt_at) > new Date() ? `scheduled ${dateTime(s.next_attempt_at)}` : s.error_code ?? (s.status === 'accepted' ? `gmail:${s.provider_message_id?.slice(0, 10) ?? ''}` : '')}</td>
               <td className="td text-right font-mono text-[11px] text-muted whitespace-nowrap">{timeAgo(s.requested_at)}</td>
             </tr>
           ))}

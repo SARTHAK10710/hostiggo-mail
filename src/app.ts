@@ -22,6 +22,7 @@ import { workspaceRoutes } from './modules/workspace.routes.js';
 import { serveWebApp, systemRoutes } from './modules/system.js';
 import { legalRoutes } from './modules/legal.js';
 import { opsRoutes } from './modules/ops.js';
+import { webhookRoutes } from './modules/webhooks.js';
 import { backupRoutes } from './modules/backups.js';
 
 export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
@@ -121,6 +122,7 @@ export async function buildApp(ctx: Ctx): Promise<FastifyInstance> {
   systemRoutes(app, ctx);
   legalRoutes(app, ctx);
   opsRoutes(app, ctx);
+  webhookRoutes(app, ctx);
   backupRoutes(app, ctx);
   await serveWebApp(app);
 

@@ -50,6 +50,13 @@ to reconnect weekly until the app is verified/published.
 - [DEPLOY.md](DEPLOY.md): putting it on a public HTTPS address with real Postgres (Supabase/Render or docker compose).
 - [GOOGLE-VERIFICATION.md](GOOGLE-VERIFICATION.md): what Google needs before anyone outside your test users can connect.
 
+## Booking emails (built)
+
+The "host has 2 hours to accept" flow for hostiggo.com: 8 ready-made templates (Transactional → Booking emails),
+send by template name, scheduled and cancellable sends (`send_at`, cancel by tag), batch sends, a `422` when a
+template value is missing, a reserved share of the daily limit plus first-in-line priority for transactional mail,
+and signed webhooks to the website when a send fails. Website integration: [BOOKING-EMAILS.md](BOOKING-EMAILS.md).
+
 ## Phase 6: launch readiness (built)
 
 - **Real Postgres verified**: `npm run test:pg` runs the whole suite on a throwaway PostgreSQL 18.
@@ -98,10 +105,11 @@ Auth: `Authorization: Bearer <session token>` + `X-Workspace-Id: <id>` (dashboar
 | Mailboxes / Deliverability | `GET /v1/mailboxes[/:id]` · `POST /v1/mailboxes/google/authorize` → `{url}` · `GET /oauth/google/callback` (redirects to `APP_BASE_URL/settings/mailboxes?connected=<id>` or `?error=<code>`) · `PATCH /v1/mailboxes/:id` · `POST /v1/mailboxes/:id/test` · `POST /v1/mailboxes/:id/disconnect` · `GET /v1/deliverability` |
 | Contacts | `GET/POST /v1/contacts` · `GET/PATCH/DELETE /v1/contacts/:id` · `GET/POST/PATCH/DELETE /v1/lists[/:id]` · `POST /v1/lists/:id/contacts` · `DELETE /v1/lists/:id/contacts/:contactId` · `GET/POST/DELETE /v1/suppressions[/:id]` |
 | CSV import | `POST /v1/contacts/imports` (`{filename, csv}`) · `PUT /v1/contacts/imports/:id/mapping` · `GET /v1/contacts/imports/:id[/rows]` · `GET /v1/contacts/imports/:id/errors.csv` · `POST /v1/contacts/imports/:id/commit` |
-| Templates | `GET/POST /v1/templates` · `GET/PUT /v1/templates/:id` (PUT = new version) · `POST /v1/templates/:id/preview` · `POST /v1/templates/:id/test` · `POST /v1/templates/:id/archive` |
+| Templates | `GET/POST /v1/templates` · `GET/PUT /v1/templates/:id` (PUT = new version; optional `slug` = API name) · `POST /v1/templates/:id/preview` · `POST /v1/templates/:id/test` · `POST /v1/templates/:id/archive` · `GET/POST /v1/templates/starter/booking` |
 | Automations | `GET/POST /v1/automations` · `GET/PUT /v1/automations/:id` · `POST /v1/automations/:id/{publish,pause,resume,archive,test}` · `GET /v1/automations/:id/enrollments` · `GET /v1/automations/:id/analytics` |
 | Campaigns | `GET/POST /v1/campaigns` · `GET/PUT /v1/campaigns/:id` · `GET /v1/campaigns/:id/review` · `POST /v1/campaigns/:id/send` (`confirm_recipients` must equal reviewed eligible count) · `POST /v1/campaigns/:id/cancel` · `GET /v1/campaigns/:id/analytics` |
-| Transactional / send log | `POST /v1/messages/send` (needs `Idempotency-Key`) · `GET /v1/sends` · `GET /v1/sends/:id` (with event timeline) · `POST /v1/sends/:id/retry` · `POST /v1/sends/:id/cancel` · `GET /v1/analytics/overview` |
+| Transactional / send log | `POST /v1/messages/send` (needs `Idempotency-Key`; `template` slug or `template_id`, `variables`, `send_at`, `tags`, `metadata`) · `POST /v1/messages/batch` · `POST /v1/sends/cancel` (`tag` or `idempotency_key`) · `GET /v1/sends` (`?tag=`) · `GET /v1/sends/:id` (with event timeline) · `POST /v1/sends/:id/retry` · `POST /v1/sends/:id/cancel` · `GET /v1/analytics/overview` |
+| Outbound webhooks | `GET/POST /v1/webhooks` · `DELETE /v1/webhooks/:id` · `POST /v1/webhooks/:id/test` · `GET /v1/webhooks/:id/deliveries` (signed `Hostiggo-Signature: t=…,v1=…`) |
 | Product events | `POST /v1/events` (`{name, email|contact_id, idempotency_key, properties}`) |
 | Public / webhooks | `GET/POST /u/:token` (unsubscribe) · `POST /webhooks/google/pubsub` · `POST /webhooks/provider/:name` (HMAC `X-Hostiggo-Signature: sha256=…`) · `GET /health` |
 

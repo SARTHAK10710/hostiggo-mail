@@ -47,6 +47,11 @@ const EnvSchema = z.object({
   GMAIL_DEFAULT_DAILY_LIMIT: z.coerce.number().default(400),
   /** Hard ceiling on a single marketing campaign sent through Gmail. */
   GMAIL_MAX_CAMPAIGN_RECIPIENTS: z.coerce.number().default(300),
+  /**
+   * Share of each mailbox's daily limit that marketing may never use, kept free for booking and
+   * other transactional emails (percent).
+   */
+  TRANSACTIONAL_RESERVE_PERCENT: z.coerce.number().min(0).max(100).default(20),
 
   /** Shared secrets for /webhooks/provider/:name, as "name:secret,name2:secret2". */
   PROVIDER_WEBHOOK_SECRETS: z.string().default(''),

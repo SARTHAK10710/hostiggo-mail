@@ -44,7 +44,9 @@ export function SendDrawer({ id, onClose }: { id: string | null; onClose: () => 
             <dt className="text-muted">Attempts</dt><dd className="font-mono">{s.attempts} / {s.max_attempts}</dd>
             <dt className="text-muted">Gmail message</dt><dd className="break-all font-mono">{s.provider_message_id ?? '—'}</dd>
             <dt className="text-muted">Thread</dt><dd className="break-all font-mono">{s.provider_thread_id ?? '—'}</dd>
-            <dt className="text-muted">Next attempt</dt><dd>{s.next_attempt_at ? dateTime(s.next_attempt_at) : '—'}</dd>
+            <dt className="text-muted">{s.status === 'queued' && !s.error_code ? 'Sends at' : 'Next attempt'}</dt><dd>{s.next_attempt_at ? dateTime(s.next_attempt_at) : '—'}</dd>
+            <dt className="text-muted">Tags</dt><dd className="font-mono">{s.tags?.length ? s.tags.join(', ') : '—'}</dd>
+            {s.metadata && Object.keys(s.metadata).length > 0 && <><dt className="text-muted">Metadata</dt><dd className="break-all font-mono text-[11px]">{JSON.stringify(s.metadata)}</dd></>}
           </dl>
           {(s.error_code || s.last_error) && (
             <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-[12px] text-rose-800">
