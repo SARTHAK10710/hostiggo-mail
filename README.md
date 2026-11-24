@@ -46,6 +46,7 @@ to reconnect weekly until the app is verified/published.
 ## Emails landing in spam? What's next?
 
 - [SPAM-FIX.md](SPAM-FIX.md): why test emails land in Spam and how to fix it, from quick steps to Google Workspace with SPF/DKIM/DMARC.
+- [DIRECTION.md](DIRECTION.md): where the project is going (internal Hostiggo tool + showcase), what to always take care of, and the stages in order.
 - [IMPROVE.md](IMPROVE.md): prioritised list of improvements (production database, public HTTPS, ESP adapter, bulk actions, CI…).
 - [DEPLOY.md](DEPLOY.md): putting it on a public HTTPS address with real Postgres (Supabase/Render or docker compose).
 - [GOOGLE-VERIFICATION.md](GOOGLE-VERIFICATION.md): what Google needs before anyone outside your test users can connect.
